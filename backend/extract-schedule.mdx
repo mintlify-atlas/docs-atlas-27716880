@@ -1,7 +1,7 @@
 ---
-title: "extract-schedule Edge Function Reference"
+title: "extract-schedule Supabase Edge Function Reference"
 sidebarTitle: "extract-schedule"
-description: "POST /functions/v1/extract-schedule — Sends PDF text to Groq's LLM and returns structured schedule sessions. Accepts pdfText, returns sessions array."
+description: "POST /functions/v1/extract-schedule — Sends raw PDF text to Groq's LLM and returns a validated sessions array with schedule data."
 ---
 
 The `extract-schedule` function is a Deno Edge Function deployed on Supabase. It receives raw text extracted from a UTM schedule PDF, forwards it to Groq's `llama-3.3-70b-versatile` model with a strict system prompt, and returns a validated array of structured class sessions. The function handles all session normalisation and virtual-class detection internally — the caller only needs to supply the plain PDF text.
@@ -16,7 +16,17 @@ The `extract-schedule` function is a Deno Edge Function deployed on Supabase. It
 POST https://{project}.supabase.co/functions/v1/extract-schedule
 ```
 
-The function accepts `POST` requests only. An `OPTIONS` preflight request returns the shared CORS headers (`Access-Control-Allow-Origin: *`) and a `200 ok` response without executing any LLM logic.
+The function accepts `POST` requests only. An `OPTIONS` preflight request returns the shared CORS headers and a `200 ok` response without executing any LLM logic.
+
+## CORS headers
+
+All responses (including `OPTIONS` preflight) include the following headers defined in `_shared/cors.ts`:
+
+| Header                          | Value                                                  |
+|---------------------------------|--------------------------------------------------------|
+| `Access-Control-Allow-Origin`   | `*`                                                    |
+| `Access-Control-Allow-Headers`  | `authorization, x-client-info, apikey, content-type`  |
+| `Access-Control-Allow-Methods`  | `POST, GET, OPTIONS, PUT, DELETE`                      |
 
 ## Authentication
 
@@ -71,16 +81,16 @@ Returns a JSON object with a single `sessions` key containing an array of valida
       Full name of the teacher. Defaults to `"N/A"` if not present in the source text.
     </ResponseField>
 
-    <ResponseField name="day" type="string | undefined">
-      Day of the week. One of `"Lunes"`, `"Martes"`, `"Miércoles"`, `"Jueves"`, or `"Viernes"`. Set to `undefined` for virtual sessions.
+    <ResponseField name="day" type="string | null">
+      Day of the week. One of `"Lunes"`, `"Martes"`, `"Miércoles"`, `"Jueves"`, or `"Viernes"`. Absent from the object for virtual sessions (field is omitted / `undefined` in the TypeScript layer, serialised as absent in JSON).
     </ResponseField>
 
-    <ResponseField name="startTime" type="string | undefined">
-      Class start time in `HH:MM` (24-hour) format. Set to `undefined` for virtual sessions.
+    <ResponseField name="startTime" type="string | null">
+      Class start time in `HH:MM` (24-hour) format, validated against `/^([01]\d|2[0-3]):[0-5]\d$/`. Absent from the object for virtual sessions.
     </ResponseField>
 
-    <ResponseField name="endTime" type="string | undefined">
-      Class end time in `HH:MM` (24-hour) format. Set to `undefined` for virtual sessions.
+    <ResponseField name="endTime" type="string | null">
+      Class end time in `HH:MM` (24-hour) format, validated against `/^([01]\d|2[0-3]):[0-5]\d$/`. Absent from the object for virtual sessions.
     </ResponseField>
 
     <ResponseField name="location" type="string">
@@ -128,9 +138,6 @@ Returns a JSON object with a single `sessions` key containing an array of valida
     {
       "subject": "MATERIA VIRTUAL",
       "teacher": "TORRES LUIS",
-      "day": undefined,
-      "startTime": undefined,
-      "endTime": undefined,
       "location": "Virtual",
       "floor": "N/A",
       "isVirtual": true
@@ -139,6 +146,10 @@ Returns a JSON object with a single `sessions` key containing an array of valida
 }
 ```
 
+<Note>
+  Virtual sessions omit `day`, `startTime`, and `endTime` entirely from the JSON output because those fields are set to `undefined` in the TypeScript response object and are therefore not serialised by `JSON.stringify`.
+</Note>
+
 ## Error responses
 
 | Status | Condition | Body |
@@ -146,8 +157,10 @@ Returns a JSON object with a single `sessions` key containing an array of valida
 | `400`  | `pdfText` is missing or blank | `{ "error": "pdfText es obligatorio." }` |
 | `405`  | Request method is not `POST` | `{ "error": "Método no permitido." }` |
 | `500`  | `GROQ_API_KEY` environment variable is not set | `{ "error": "Falta GROQ_API_KEY" }` |
+| `500`  | Unexpected runtime error | `{ "error": "<error message>" }` |
 | `502`  | Groq API returned a non-OK status | `{ "error": "<groq error message>" }` |
-| `502`  | Groq response body was empty or not valid JSON | `{ "error": "Groq respondió sin contenido parseable." }` |
+| `502`  | Groq response body was empty or not valid JSON (no content) | `{ "error": "Groq respondió sin contenido parseable." }` |
+| `502`  | Groq response content was not valid JSON | `{ "error": "Groq devolvió contenido no JSON." }` |
 
 ## Environment variables
 
@@ -168,20 +181,47 @@ The function runs a multi-step validation pipeline on every object returned by t
 </Note>
 
 1. **Type coercion** — Every field is cast to a string and trimmed. Non-string values fall back to sensible defaults (`"N/A"` for teacher/floor, `""` for day/times, `"Virtual"` for location).
-2. **Virtual detection** — A session is marked `isVirtual = true` if `isVirtual` is already `true`, OR the `location` string contains `"VIRTUAL"` (case-insensitive), OR `day`, `startTime`, and `endTime` are all empty.
+2. **Virtual detection** — A session is marked `isVirtual = true` if `isVirtual` is already `true`, OR the `location` string contains `"VIRTUAL"` (case-insensitive), OR `day`, `startTime`, and `endTime` are all empty strings after coercion.
 3. **Virtual field clearing** — On virtual sessions, `day`, `startTime`, and `endTime` are set to `undefined` and `location` is overwritten with `"Virtual"`.
-4. **Filter pass** — A session is kept only if `subject` is non-empty AND either `isVirtual` is `true` OR all three of `day` (from the allowed set), `startTime`, and `endTime` (both matching `HH:MM`) are valid.
+4. **Filter pass** — A session is kept only if `subject` is non-empty AND either `isVirtual` is `true` OR all three of `day` (must be one of the five allowed days), `startTime`, and `endTime` (both matching `HH:MM`) are valid.
 
-## LLM system prompt summary
+### Allowed days
+
+The `ALLOWED_DAYS` set contains exactly: `'Lunes'`, `'Martes'`, `'Miércoles'`, `'Jueves'`, `'Viernes'`. Any other value (including `'Sábado'`, `'Domingo'`, or misspellings) causes the session to be dropped.
+
+### Time format
+
+Times are validated against the regex `/^([01]\d|2[0-3]):[0-5]\d$/`. Values such as `"7:00"` (missing leading zero) or `"24:00"` will fail validation and cause the session to be dropped.
+
+## LLM system prompt rules
 
 The system prompt sent to Groq instructs the model to:
 
-- Return **only** a valid JSON object with a root key `"sessions"` containing an array.
+- Return **only** a valid JSON object with a root key `"sessions"` containing an array — no markdown fences or prose.
 - Include every class session found, including virtual ones (`isVirtual: true`).
-- Strip subject-name prefixes such as `"TECNOLOGÍAS DE LA "` and the name of the degree programme.
-- Omit mesh/curriculum suffixes in parentheses such as `"(A19)"`, `"(ITINERARIO)"`, or `"(VIRTUAL)"`.
-- Use `"MATERIA VIRTUAL"` as the trigger to set `isVirtual: true` when the source explicitly labels a subject as virtual.
 - Set `temperature: 0.1` and `response_format: { type: "json_object" }` to maximise determinism.
+
+Each session object must follow this structure:
+
+```typescript
+{
+  subject:   string;            // real subject name only
+  teacher:   string;            // "N/A" if absent
+  day?:      string;            // "Lunes" | "Martes" | "Miércoles" | "Jueves" | "Viernes" — omit for virtual
+  startTime?: string;           // "HH:MM" 24-hour — omit for virtual
+  endTime?:  string;            // "HH:MM" 24-hour — omit for virtual
+  location:  string;            // classroom or "Virtual"
+  floor:     string;            // floor label or "N/A"
+  isVirtual: boolean;           // true if text says "MATERIA VIRTUAL" or no schedule
+}
+```
+
+**Subject name rules enforced by the system prompt:**
+
+- Extract **only** the real subject name — no career or programme name prefix.
+- **Forbidden** prefixes: `"TECNOLOGÍAS DE LA "`, degree programme name.
+- **Forbidden** suffixes: parenthetical mesh/curriculum codes such as `"(A19)"`, `"(ITINERARIO)"`, `"(VIRTUAL)"`.
+- Correct: `"SISTEMAS DISTRIBUIDOS"` — Incorrect: `"TECNOLOGÍAS DE LA SISTEMAS DISTRIBUIDOS (A19)"`.
 
 <Tip>
   The frontend client (`parseScheduleFileWithEdge`) performs an additional sanitisation pass on `subject` values after receiving the response, removing any residual prefixes or parenthetical suffixes the model may have missed. Both layers together ensure clean subject names reach the UI.

@@ -1,5 +1,5 @@
 ---
-title: "Sync Your Schedule to Google Calendar"
+title: "Sync Your UTM Schedule to Google Calendar – Inforario"
 sidebarTitle: "Google Calendar"
 description: "Push your UTM schedule as recurring weekly events to Google Calendar using Inforario's OAuth2 integration and the google-calendar-sync Edge Function."
 ---
@@ -117,7 +117,7 @@ const events = buildCalendarEventsFromSchedule(
     RRULE:FREQ=WEEKLY;UNTIL=20241215T235959Z
     ```
 
-    The `UNTIL` timestamp is derived from `semesterEnd` with its time set to `23:59:59` and serialized to UTC `Z` format. There is no `BYDAY` constraint in the Edge path (the start date already pins the correct weekday); the `googleAuth.ts` direct-API path additionally appends `BYDAY=MO|TU|WE|TH|FR`.
+    The `UNTIL` timestamp is derived from `semesterEnd` with its time set to `23:59:59` and serialized to UTC `Z` format. There is no `BYDAY` constraint in the Edge path (the start date already pins the correct weekday); the `useGoogleCalendar` hook path (`googleAuth.ts`) additionally appends a per-session `BYDAY` value (e.g. `BYDAY=MO`) to each event's RRULE.
   </Accordion>
 </AccordionGroup>
 
@@ -220,6 +220,64 @@ If inserting a single event returns `HTTP 401` or `HTTP 403`, the Edge Function 
   "message": "No hay tokens de Google Calendar para este usuario. Conecta Google primero."
 }
 ```
+
+---
+
+## `useGoogleCalendar` Hook
+
+The `useGoogleCalendar` hook (`googleAuth.ts`) provides the **browser-side** Google Calendar integration path using the Google API JavaScript Library (GAPI) and the Google Identity Services (GIS) SDK. It loads both scripts dynamically, initializes an OAuth2 token client, and exposes `syncScheduleToCalendar` — which creates a new named Google Calendar and batch-inserts all class sessions directly from the browser without going through the Edge Function.
+
+```typescript
+import { useGoogleCalendar } from '@/services/google/googleAuth';
+
+const {
+  isLoading,
+  isAuthenticated,
+  error,
+  initializeGoogleApi,
+  syncScheduleToCalendar,
+} = useGoogleCalendar();
+```
+
+<AccordionGroup>
+  <Accordion title="Return values">
+    <ResponseField name="isLoading" type="boolean">
+      `true` while the GAPI and GIS scripts are loading or while initialization is in progress.
+    </ResponseField>
+    <ResponseField name="isAuthenticated" type="boolean">
+      `true` when `window.gapi.client.getToken()` returns a valid access token.
+    </ResponseField>
+    <ResponseField name="error" type="string | null">
+      Any error message from initialization or token request.
+    </ResponseField>
+    <ResponseField name="initializeGoogleApi" type="() => Promise<void>">
+      Loads the GAPI and GIS scripts, initializes the GAPI client with the Calendar discovery doc, and creates the OAuth2 token client. Called automatically on mount; safe to call multiple times (deduplicated via a promise ref).
+    </ResponseField>
+    <ResponseField name="syncScheduleToCalendar" type="(schedule, semesterStart, semesterEnd) => Promise<SyncResult>">
+      Requests an OAuth2 access token (prompting for consent on first use), creates a new Google Calendar named `Horario UTM – {academic_period}`, then batch-inserts all non-virtual, non-conflicting sessions as weekly recurring events. Returns `{ success: boolean; message: string }`.
+    </ResponseField>
+  </Accordion>
+  <Accordion title="RRULE format in this path">
+    Unlike the Edge Function path, `useGoogleCalendar` appends a per-session `BYDAY` token to each recurrence rule so that each event is explicitly anchored to its day of the week:
+
+    ```text
+    RRULE:FREQ=WEEKLY;UNTIL=20241215T235959Z;BYDAY=MO
+    ```
+
+    Spanish day names are mapped to RRULE tokens via an inline `dayRuleMap`:
+
+    | Spanish   | BYDAY |
+    |-----------|-------|
+    | Lunes     | `MO`  |
+    | Martes    | `TU`  |
+    | Miércoles | `WE`  |
+    | Jueves    | `TH`  |
+    | Viernes   | `FR`  |
+  </Accordion>
+  <Accordion title="Required environment variable">
+    The hook reads `GOOGLE_CLIENT_ID` from the `constants` module (populated from `VITE_GOOGLE_CLIENT_ID`). If the constant is empty, `initializeGoogleApi` throws immediately with a descriptive error message.
+  </Accordion>
+</AccordionGroup>
 
 ---
 

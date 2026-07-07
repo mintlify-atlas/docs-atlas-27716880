@@ -34,7 +34,7 @@ Before you begin, make sure you have the following installed:
     cd frontend && npm install
     ```
 
-    This installs React 19, pdfjs-dist, Tesseract.js, Framer Motion, Supabase JS client, Tailwind CSS, and the rest of the dependency tree defined in `frontend/package.json`.
+    This installs React 19, pdfjs-dist, Tesseract.js, Framer Motion, Supabase JS client, jsPDF, Three.js, and the rest of the dependency tree defined in `frontend/package.json`.
   </Step>
 
   <Step title="Configure environment variables">
@@ -64,7 +64,7 @@ Before you begin, make sure you have the following installed:
     Vite will compile the project and start a local server. Open your browser and navigate to:
 
     ```
-    http://localhost:5173
+    http://localhost:3000
     ```
   </Step>
 
@@ -98,7 +98,7 @@ This command runs two processes in parallel:
 | Process | Description |
 |---|---|
 | `FUNC` | Serves the `extract-schedule` Supabase Edge Function locally using the Supabase CLI, with its own `.env` file at `backend/supabase/functions/extract-schedule/.env` |
-| `VITE` | Starts the Vite dev server on `http://localhost:5173` |
+| `VITE` | Starts the Vite dev server on `http://localhost:3000` |
 
 The output is color-coded (magenta for the Edge Function, cyan for Vite) so you can distinguish logs from each process.
 
@@ -127,7 +127,7 @@ This calls `cd ../backend && supabase start` under the hood and launches the ful
 
 | Script | Command | Description |
 |---|---|---|
-| `dev` | `vite` | Starts the Vite dev server on port 5173 |
+| `dev` | `vite` | Starts the Vite dev server on port 3000 |
 | `build` | `tsc && vite build` | Type-checks and builds the production bundle |
 | `dev:web` | `concurrently ...` | Runs Vite + `extract-schedule` Edge Function concurrently |
 | `start:supa` | `cd ../backend && supabase start` | Starts the local Supabase Docker stack |

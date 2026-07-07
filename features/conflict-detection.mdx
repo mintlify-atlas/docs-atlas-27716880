@@ -1,5 +1,5 @@
 ---
-title: "Automatic Schedule Conflict Detection"
+title: "Detecting and Displaying Schedule Conflicts in Inforario"
 sidebarTitle: "Conflict Detection"
 description: "Inforario automatically detects overlapping class sessions on the same day and flags them visually. Conflicts are resolved non-destructively."
 ---
@@ -159,11 +159,17 @@ Clicking a conflicting session in either view opens the detail modal, which disp
 
 ## Exclusion of Virtual Sessions
 
-Sessions marked `isVirtual: true` — or those without `day`, `startTime`, or `endTime` — are always excluded from conflict evaluation in both `resolveConflicts` and `useConflictResolver`. They are returned in a separate bucket and rendered outside the time grid entirely.
+Sessions without a `day`, `startTime`, or `endTime` are excluded from conflict evaluation in both `resolveConflicts` and `useConflictResolver`. Because virtual sessions are pushed to the parser with `day: undefined` and no time fields, they naturally end up in the unscheduled bucket in both paths.
+
+`useConflictResolver` additionally applies an explicit `!s.isVirtual` guard before the comparison loop, while `resolveConflicts` relies on the missing `day`/time fields to achieve the same result:
 
 ```typescript
-// Both paths apply this filter before the O(n²) comparison loop
-const schedulable = sessions.filter(
+// resolveConflicts (sguRegexParser.ts) — filters by scheduled fields only
+const schedulable = sessions.filter((s) => s.day && s.startTime && s.endTime);
+const unscheduled = sessions.filter((s) => !s.day || !s.startTime || !s.endTime);
+
+// useConflictResolver — also explicitly excludes isVirtual sessions
+const schedulable = updated.filter(
   (s) => !s.isVirtual && s.day && s.startTime && s.endTime
 );
 ```

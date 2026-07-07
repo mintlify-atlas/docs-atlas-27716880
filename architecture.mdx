@@ -56,6 +56,7 @@ src/
 │   ├── supabase/               # Supabase configuration and queries
 │   │   └── supabaseClient.ts   # DB client, auth helpers, parseScheduleFileWithEdge
 │   ├── google/                 # Google Calendar API integration
+│   │   ├── googleAuth.ts          # OAuth2 authentication flow and token management
 │   │   └── googleCalendarEdge.ts  # buildCalendarEventsFromSchedule, syncCalendarEvents
 │   └── ics/                    # Native data conversion utilities
 │       └── icsGenerator.ts     # Generates standards-compliant .ics files
@@ -66,7 +67,7 @@ src/
 │   └── database.ts             # Supabase table-mapped types
 │
 ├── styles/                     # Global styles and design tokens
-│   └── globals.css             # Tailwind CSS injections and UTM typographic utilities
+│   └── globals.css             # Global CSS design tokens and UTM typographic utilities
 │
 ├── App.tsx                     # Clean orchestrator (~100 lines, acts as View Router)
 └── index.tsx                   # React DOM hydration entry point

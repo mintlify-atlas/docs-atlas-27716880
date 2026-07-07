@@ -1,10 +1,12 @@
 ---
-title: "google-calendar-sync Edge Function Reference"
-sidebarTitle: "google-calendar-sync"
-description: "POST /functions/v1/google-calendar-sync — Creates recurring Google Calendar events from a schedule. Requires Supabase user auth and stored OAuth2 tokens."
+title: "google-calendar-sync Supabase Edge Function Reference"
+sidebarTitle: "Google Calendar Sync"
+description: "POST /functions/v1/google-calendar-sync — Authenticates via Supabase JWT, refreshes Google OAuth2 tokens, and creates recurring calendar events."
 ---
 
 The `google-calendar-sync` function is a Deno Edge Function deployed on Supabase. It reads a signed-in user's Google OAuth2 tokens from the `user_calendar_tokens` database table, automatically refreshes the access token if it is about to expire, and then creates the supplied events in the user's Google Calendar. All token management — including persisting refreshed tokens back to the database — happens inside the function; the calling client never handles OAuth credentials directly.
+
+The function is implemented using `serve` from [`deno.land/std@0.224.0/http/server.ts`](https://deno.land/std@0.224.0/http/server.ts), not the newer `Deno.serve` global.
 
 <Warning>
   Users **must** connect their Google Calendar account before calling this endpoint. The function looks up stored tokens by the authenticated user's ID. If no row exists in `user_calendar_tokens` for that user, the function returns `400`. Direct the user to complete the Google OAuth2 flow and ensure a row is inserted before invoking this endpoint.
@@ -17,6 +19,16 @@ POST https://{project}.supabase.co/functions/v1/google-calendar-sync
 ```
 
 The function accepts `POST` requests only. `OPTIONS` preflight requests are answered immediately with the shared CORS headers and a `200 ok` body.
+
+## CORS headers
+
+All responses (including `OPTIONS` preflight) include the following headers defined in `_shared/cors.ts`:
+
+| Header                          | Value                                                  |
+|---------------------------------|--------------------------------------------------------|
+| `Access-Control-Allow-Origin`   | `*`                                                    |
+| `Access-Control-Allow-Headers`  | `authorization, x-client-info, apikey, content-type`  |
+| `Access-Control-Allow-Methods`  | `POST, GET, OPTIONS, PUT, DELETE`                      |
 
 ## Authentication
 
@@ -94,6 +106,25 @@ Authorization: Bearer <supabase-user-jwt>
 <ParamField body="calendarId" type="string">
   Google Calendar ID to add the events to. Defaults to `"primary"` (the user's default calendar) when not provided.
 </ParamField>
+
+### TypeScript type
+
+```typescript
+type CalendarEventInput = {
+  summary: string;
+  description?: string;
+  location?: string;
+  start: {
+    dateTime: string;
+    timeZone: string;
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  recurrence?: string[];
+};
+```
 
 ### Example request
 
@@ -184,8 +215,10 @@ curl -X POST \
 
 ## Error responses
 
-| Status | Condition | Body (`message`) |
-|--------|-----------|------------------|
+All error responses include a `success: false` field alongside the `message` field.
+
+| Status | Condition | `message` value |
+|--------|-----------|-----------------|
 | `400`  | `events` array is missing or empty | `"Debes enviar al menos un evento."` |
 | `400`  | No token row found in `user_calendar_tokens` for the user | `"No hay tokens de Google Calendar para este usuario. Conecta Google primero."` |
 | `400`  | Access token is expired but `refresh_token` is `null` | `"Tu cuenta no tiene refresh token. Reconecta Google Calendar para continuar."` |
@@ -194,6 +227,8 @@ curl -X POST \
 | `405`  | Request method is not `POST` | `"Método no permitido."` |
 | `500`  | `SUPABASE_URL` or `SUPABASE_ANON_KEY` not set | `"Faltan variables SUPABASE_URL o SUPABASE_ANON_KEY."` |
 | `500`  | `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` not set | `"Faltan secretos GOOGLE_CLIENT_ID o GOOGLE_CLIENT_SECRET."` |
+| `500`  | Token DB update failed after a mid-flight refresh | `"No se pudo guardar el token refrescado después de un 401."` |
+| `500`  | Unexpected runtime error | `"<error message>"` |
 | `502+` | Google Calendar API returned a non-OK status | Forwarded Google error message |
 
 ## Environment variables
@@ -216,13 +251,15 @@ curl -X POST \
 
 ## Token refresh logic
 
-The function checks whether the stored access token needs refreshing before it attempts to create any calendar events. The check uses a **60-second safety margin** (`REFRESH_MARGIN_MS = 60 * 1000`): if the stored `expiry_date` is within 60 seconds of the current time (or is missing / unparseable), the token is considered expired.
+The function checks whether the stored access token needs refreshing before it attempts to create any calendar events. The check uses a **60-second safety margin** (`REFRESH_MARGIN_MS = 60 * 1000` ms): if the stored `expiry_date` is within 60 seconds of the current time — or is `null`, missing, or unparseable — the token is considered expired and is refreshed proactively.
+
+The token refresh endpoint used is `https://oauth2.googleapis.com/token` and the Google Calendar API base URL is `https://www.googleapis.com/calendar/v3`.
 
 **Pre-flight refresh flow:**
 
 ```
 1. Read token row from user_calendar_tokens for authenticated user.
-2. If expiry_date ≤ now + 60 s:
+2. If expiry_date ≤ now + 60 000 ms (REFRESH_MARGIN_MS):
      POST https://oauth2.googleapis.com/token
        grant_type=refresh_token
        client_id, client_secret, refresh_token
@@ -234,15 +271,15 @@ The function checks whether the stored access token needs refreshing before it a
 
 **Mid-flight retry on 401/403:**
 
-If a Google Calendar API call fails with HTTP `401` or `403` during event insertion (e.g., the token was silently invalidated), and a `refresh_token` is available, the function performs a second refresh, updates the database row, and retries the failing event **once**. If the retry also fails, the error is propagated and the entire request fails.
+If a Google Calendar API call fails with HTTP `401` or `403` during event insertion (e.g., the token was silently invalidated between the pre-flight check and the API call), and a `refresh_token` is available, the function performs a second full refresh, updates the `user_calendar_tokens` row in the database, and retries the failing event **once**. If the retry also fails, the error is propagated and the entire request returns `500`.
 
 <Note>
-  If Google issues a new `refresh_token` during either refresh cycle (uncommon but possible), the new value replaces the old one in `user_calendar_tokens`. If Google does not return a new `refresh_token`, the existing one is preserved.
+  If Google issues a new `refresh_token` during either refresh cycle (uncommon but possible when `access_type=offline` is set without `prompt=consent`), the new value replaces the old one in `user_calendar_tokens`. If Google does not return a new `refresh_token`, the existing stored value is preserved.
 </Note>
 
 ## Database table: `user_calendar_tokens`
 
-The function reads from and writes to a single Supabase table:
+The function reads from and writes to a single Supabase table. The Supabase client is created with the user's JWT in the `Authorization` header so that RLS policies apply automatically.
 
 | Column          | Type     | Description |
 |-----------------|----------|-------------|
@@ -251,6 +288,17 @@ The function reads from and writes to a single Supabase table:
 | `refresh_token` | `text?`  | Google OAuth2 refresh token. May be `null` if the OAuth flow did not return one. |
 | `expiry_date`   | `text?`  | ISO 8601 datetime string representing when `access_token` expires. |
 
+The corresponding TypeScript type used inside the function is:
+
+```typescript
+type CalendarTokenRow = {
+  user_id: string;
+  access_token: string;
+  refresh_token: string | null;
+  expiry_date: string | null;
+};
+```
+
 <Tip>
-  Populate `user_calendar_tokens` during your Google OAuth2 callback handler. Store the `access_token`, `refresh_token`, and compute `expiry_date` as `new Date(Date.now() + expires_in * 1000).toISOString()`. A missing or `null` `refresh_token` will block silent re-authentication and force the user to reconnect.
+  Populate `user_calendar_tokens` during your Google OAuth2 callback handler. Store the `access_token`, `refresh_token`, and compute `expiry_date` as `new Date(Date.now() + expires_in * 1000).toISOString()`. A missing or `null` `refresh_token` will block silent re-authentication and force the user to reconnect Google Calendar.
 </Tip>

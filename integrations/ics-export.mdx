@@ -1,5 +1,5 @@
 ---
-title: "Export Your Schedule as an ICS Calendar File"
+title: "Download Your UTM Schedule as an ICS Calendar File"
 sidebarTitle: "ICS Export"
 description: "Generate a standards-compliant iCalendar (.ics) file from your Inforario schedule for import into Apple Calendar, Outlook, or any calendar application."
 ---
@@ -100,7 +100,21 @@ function getFirstOccurrence(startDate: Date, dayName: string, startTime: string)
   The class start time in `"HH:mm"` format (e.g. `"08:00"`). Applied directly to the resulting `Date` object.
 </ParamField>
 
-The function maps Spanish day names to JavaScript `Date.getDay()` indices via a lookup table, computes the forward distance to the target weekday, and applies the time components using `setHours`.
+The function maps Spanish day names to JavaScript `Date.getDay()` indices via the `DAY_TO_NUM` lookup table, computes the forward distance to the target weekday, and applies the time components using `setHours`.
+
+---
+
+## `formatICSDate`
+
+An internal helper that formats a JavaScript `Date` object into the **floating local time** string required by RFC 5545 for `DTSTART` and `DTEND` fields.
+
+```typescript
+function formatICSDate(date: Date): string
+// Returns: "YYYYMMDDTHHMMSS"  (no UTC offset)
+// Example: formatICSDate(new Date('2024-03-04T08:00:00')) → "20240304T080000"
+```
+
+The format is `YYYYMMDDTHHMMSS` — no trailing `Z` and no timezone offset. This is **floating local time**: the event is interpreted in whichever timezone the user's calendar application is set to at import time. See the `DTSTART` row in the VEVENT table below for context.
 
 ---
 
@@ -118,9 +132,21 @@ CALSCALE:GREGORIAN
 METHOD:PUBLISH
 ```
 
-### Day-to-ICS Mapping
+### `DAY_TO_ICS_DAY` Map
 
-Spanish weekday names from the schedule are mapped to RFC 5545 `BYDAY` tokens:
+The module-level `DAY_TO_ICS_DAY` constant maps Spanish weekday names to RFC 5545 `BYDAY` tokens used in the `RRULE` and the `BYDAY` field of each `VEVENT`:
+
+```typescript
+const DAY_TO_ICS_DAY: Record<string, string> = {
+  'Lunes':     'MO',
+  'Martes':    'TU',
+  'Miércoles': 'WE',
+  'Jueves':    'TH',
+  'Viernes':   'FR',
+  'Sábado':    'SA',
+  'Domingo':   'SU',
+};
+```
 
 | Spanish    | ICS Token |
 |------------|-----------|
@@ -131,6 +157,22 @@ Spanish weekday names from the schedule are mapped to RFC 5545 `BYDAY` tokens:
 | Viernes    | `FR`      |
 | Sábado     | `SA`      |
 | Domingo    | `SU`      |
+
+### `DAY_TO_NUM` Map
+
+The `DAY_TO_NUM` constant maps Spanish day names to JavaScript `Date.getDay()` index values (0 = Sunday). It is used by `getFirstOccurrence` to compute the forward distance from the semester start date to the first matching weekday:
+
+```typescript
+const DAY_TO_NUM: Record<string, number> = {
+  'Domingo':   0,
+  'Lunes':     1,
+  'Martes':    2,
+  'Miércoles': 3,
+  'Jueves':    4,
+  'Viernes':   5,
+  'Sábado':    6,
+};
+```
 
 ### VEVENT Fields
 

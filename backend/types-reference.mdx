@@ -1,14 +1,16 @@
 ---
-title: "TypeScript Types and Interfaces Reference"
+title: "Inforario TypeScript Types and Interfaces Reference"
 sidebarTitle: "Types Reference"
-description: "Complete reference for all TypeScript interfaces, enums, and type aliases used across Inforario's frontend codebase."
+description: "Complete reference for all TypeScript interfaces, enums, and type aliases in Inforario's frontend — AppView, Feature, ClassSession, Schedule, and more."
 ---
 
-Inforario's type definitions live under `src/types/` and are re-exported through a single barrel at `src/types/index.ts`. This page documents every public type, interface, enum, and constant in the order they are defined across those files, plus the `CalendarEventInput` and `SyncCalendarResponse` interfaces from the Google Calendar Edge service.
+Inforario's type definitions live under `src/types/` and are re-exported through a single barrel at `src/types/index.ts`. The barrel re-exports everything from `types/sgu.ts` (schedule domain types) and `types/database.ts` (Supabase row shapes), then adds the two application-level enums directly. This page documents every public type in source order, plus `CalendarEventInput` and `SyncCalendarResponse` from the Google Calendar Edge service.
 
 ---
 
 ## From `types/index.ts`
+
+`types/index.ts` re-exports all symbols from `types/sgu.ts` and `types/database.ts`, and directly defines the two application-level enums below.
 
 ### `AppView`
 
@@ -72,6 +74,10 @@ export enum Feature {
 
 ---
 
+## From `types/sgu.ts`
+
+`types/sgu.ts` defines the core schedule domain types: the day union, the session shape, the top-level schedule wrapper, and the theme selector.
+
 ### `DayOfWeek`
 
 A string union type representing the five weekdays used in UTM schedules. Only these values are ever stored in `ClassSession.day`.
@@ -91,25 +97,6 @@ export const DAYS: DayOfWeek[] = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Vi
 ```
 
 ---
-
-### `ScheduleTheme`
-
-Controls the visual appearance preset applied to the schedule grid.
-
-```typescript
-export type ScheduleTheme = 'DEFAULT' | 'MINIMALIST' | 'SCHOOL' | 'NEON';
-```
-
-| Value | Description |
-|---|---|
-| `DEFAULT` | Standard color-coded grid |
-| `MINIMALIST` | Low-contrast, muted palette |
-| `SCHOOL` | Bold, high-readability design |
-| `NEON` | Dark background with bright accent colors |
-
----
-
-## From `types/sgu.ts`
 
 ### `ClassSession`
 
@@ -223,7 +210,26 @@ export interface Schedule {
 
 ---
 
+### `ScheduleTheme`
+
+Controls the visual appearance preset applied to the schedule grid.
+
+```typescript
+export type ScheduleTheme = 'DEFAULT' | 'MINIMALIST' | 'SCHOOL' | 'NEON';
+```
+
+| Value | Description |
+|---|---|
+| `DEFAULT` | Standard color-coded grid |
+| `MINIMALIST` | Low-contrast, muted palette |
+| `SCHOOL` | Bold, high-readability design |
+| `NEON` | Dark background with bright accent colors |
+
+---
+
 ## From `types/database.ts`
+
+`types/database.ts` defines the Supabase row shapes and imports `ClassSession` from `types/sgu.ts`.
 
 ### `UserProfile`
 
@@ -263,7 +269,7 @@ export interface UserProfile {
 
 ### `DBResponseSchedule`
 
-Shape of a row returned from the Supabase `schedules` table. Used as the return type of `getUserSchedules()` and `getScheduleById()`.
+Shape of a row returned from the Supabase `schedules` table. Used as the return type of `getScheduleById()`. Note that `getUserSchedules()` selects only `id`, `title`, `academic_period`, and `last_updated` — it does not return the full `DBResponseSchedule` shape.
 
 ```typescript
 export interface DBResponseSchedule {
@@ -298,7 +304,7 @@ export interface DBResponseSchedule {
 </ResponseField>
 
 <ResponseField name="schedule_data" type="ClassSession[]" required>
-  The full session array, stored as JSON in the database. Deserialised automatically by the Supabase client. Note: `getUserSchedules()` does **not** select this column for performance; only `getScheduleById()` returns it.
+  The full session array, stored as JSON in the database column `schedule_data`. Deserialised automatically by the Supabase client. This field is only present when fetched by `getScheduleById()` (which selects `*`).
 </ResponseField>
 
 <ResponseField name="created_at" type="string" required>
@@ -306,7 +312,7 @@ export interface DBResponseSchedule {
 </ResponseField>
 
 <Note>
-  The `schedules` table also has a `last_updated` column that is not reflected in `DBResponseSchedule` — it is written by `saveScheduleToDB` but selected only in the `getUserSchedules` lightweight query (as `last_updated`, not mapped into this interface). Keep this in mind if you extend the type for list views.
+  The `schedules` table also has a `last_updated` column that is not part of the `DBResponseSchedule` interface. It is written by `saveScheduleToDB` and returned by `getUserSchedules()` lightweight queries, but is not modelled in this interface. Extend the type if your UI needs to display it.
 </Note>
 
 ---
@@ -370,7 +376,7 @@ export interface CalendarEventInput {
 
 ### `SyncCalendarResponse`
 
-The response shape returned by `syncCalendarEvents()` after calling the `google-calendar-sync` Edge Function. This type is internal to `googleCalendarEdge.ts` and not re-exported.
+The response shape returned by `syncCalendarEvents()` after calling the `google-calendar-sync` Edge Function. This type is internal to `googleCalendarEdge.ts` and not re-exported from the barrel.
 
 ```typescript
 interface SyncCalendarResponse {

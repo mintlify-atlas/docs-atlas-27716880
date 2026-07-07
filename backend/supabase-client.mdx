@@ -1,7 +1,7 @@
 ---
-title: "Supabase Client Service Reference"
+title: "Supabase Client Service — Database and Auth Reference"
 sidebarTitle: "Supabase Client"
-description: "Reference for all database operations, authentication helpers, and the AI Edge Function caller exported from supabaseClient.ts."
+description: "Reference for all database operations, authentication helpers, and the AI Edge Function caller exported from supabaseClient.ts in Inforario."
 ---
 
 The `supabaseClient.ts` service is the single entry point for all communication between Inforario's frontend and the Supabase backend. It handles safe client initialization with a graceful dummy-object fallback, exposes typed wrappers around the `schedules` and `profiles` tables, provides authentication helpers, and calls the `extract-schedule` Edge Function for AI-powered PDF parsing.
@@ -103,10 +103,10 @@ Returns `null` when:
 ### `getUserSchedules()`
 
 ```typescript
-getUserSchedules(userId: string): Promise<DBResponseSchedule[]>
+getUserSchedules(userId: string): Promise<Array<{ id: string; title: string; academic_period?: string; last_updated: string }>>
 ```
 
-Fetches lightweight schedule summaries for a user — excludes the full `schedule_data` blob to keep list views fast.
+Fetches lightweight schedule summaries for a user — excludes the full `schedule_data` blob to keep list views fast. The returned objects are **partial rows**, not full `DBResponseSchedule` shapes.
 
 Returns `[]` when:
 - Supabase is not configured

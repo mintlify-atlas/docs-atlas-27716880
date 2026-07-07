@@ -1,7 +1,7 @@
 ---
-title: "SGU Schedule Parser Utility Reference"
+title: "SGU Schedule Parser — Local PDF and Image Parser Reference"
 sidebarTitle: "SGU Parser"
-description: "Reference for the local PDF/image schedule parser functions exported from sguRegexParser.ts, including the positional text extractor and normalization utilities."
+description: "Reference for parseScheduleFile and resolveConflicts exported from sguRegexParser.ts — Inforario's local, zero-network UTM schedule parser."
 ---
 
 `sguRegexParser.ts` is Inforario's fully local, zero-network schedule parser. It processes the official UTM Sistema de Gestión Universitaria (SGU) schedule PDF (or an image scan) entirely inside the browser using `pdfjs-dist` for PDF text extraction and `Tesseract.js` for OCR fallback. The output is a structured `ParseResult` ready to be rendered in the schedule grid.
@@ -12,6 +12,8 @@ The two public exports are `parseScheduleFile` — the main entry point — and 
 
 ## Types
 
+`ParseResult` is the local return type for parser output. `ClassSession` is imported from `types/sgu.ts` — see the [Types Reference](/backend/types-reference) page for its full field documentation.
+
 ```typescript
 interface ParseResult {
   sessions: ClassSession[];
@@ -20,21 +22,11 @@ interface ParseResult {
   student_name?: string;
   career?: string;
 }
+```
 
-interface ClassSession {
-  id: string;
-  subject: string;
-  subject_faculty?: string;
-  day?: DayOfWeek;
-  startTime?: string;  // "HH:mm"
-  endTime?: string;    // "HH:mm"
-  teacher: string;
-  location: string;
-  floor?: string;
-  isVirtual?: boolean;
-  color?: string;
-  conflict?: boolean;
-}
+```typescript
+// ClassSession is imported from '../../types' (types/sgu.ts)
+import { ClassSession } from '../../../types';
 ```
 
 ---
@@ -126,6 +118,28 @@ console.log(`${conflicts.length} conflicting sessions detected`);
 <Note>
   `resolveConflicts` is **non-destructive**: it never removes sessions. Every session in the input appears exactly once in the output. Only the `conflict` property is changed.
 </Note>
+
+---
+
+## Constants
+
+### `SUBJECT_COLORS`
+
+The ordered palette used to assign deterministic colors to subjects. Colors are assigned round-robin based on the number of distinct subjects already seen, using subject name (uppercased) as the map key.
+
+```typescript
+const SUBJECT_COLORS = [
+  '#22C55E',
+  '#3B82F6',
+  '#F97316',
+  '#EF4444',
+  '#A855F7',
+  '#06B6D4',
+  '#EAB308',
+];
+```
+
+The helper `getSubjectColor(subject, subjectColors)` maintains a `Map<string, string>` across a single parse run. The same subject name always receives the same color within a parse, and the color can be later overridden by the user via the `CUSTOMIZE_COLOR` feature.
 
 ---
 

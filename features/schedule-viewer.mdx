@@ -1,5 +1,5 @@
 ---
-title: "Interactive Schedule Grid and List Views"
+title: "Interactive Schedule Grid and List Views — Inforario"
 sidebarTitle: "Schedule Viewer"
 description: "Inforario displays your parsed timetable as a desktop weekly grid or a mobile-optimized list view, with font scaling, zoom, and PDF export."
 ---
@@ -46,6 +46,9 @@ Each `ClassSession` is positioned absolutely within its day column:
 ```typescript
 // ScheduleGrid.tsx — position calculation
 const getPosition = (session: ClassSession) => {
+  if (!session.startTime || !session.endTime) {
+    return { top: '0px', height: '80px' };
+  }
   const [startH, startM] = session.startTime.split(':').map(Number);
   const [endH,   endM  ] = session.endTime.split(':').map(Number);
   const startOffset = (startH - minHour) * 60 + startM;
