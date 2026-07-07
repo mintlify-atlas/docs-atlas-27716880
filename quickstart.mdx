@@ -1,47 +1,133 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Inforario Locally"
+sidebarTitle: "Quickstart"
+description: "Clone Inforario, install dependencies, set your Supabase environment variables, and run the Vite dev server in under 5 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+Getting Inforario running on your local machine takes just a few commands. The frontend is a standard Vite + React project, and the optional backend services (Supabase auth, cloud persistence, and AI extraction) are isolated behind environment variables so you can skip them entirely if you only need PDF parsing.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure you have the following installed:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Node.js** v18 or later
+- **npm** v9 or later
+- _(Optional)_ **Supabase CLI** — only needed for local Edge Functions or a local Supabase instance
 
-## Get started
+---
+
+## Run the Frontend
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Clone the Inforario repository and navigate into the project root:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/DavidCevallos15/inforario-IA-null.git && cd inforario-IA-null
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Install frontend dependencies">
+    Move into the `frontend` directory and install all npm packages:
 
     ```bash
-    your-cli init
+    cd frontend && npm install
+    ```
+
+    This installs React 19, pdfjs-dist, Tesseract.js, Framer Motion, Supabase JS client, Tailwind CSS, and the rest of the dependency tree defined in `frontend/package.json`.
+  </Step>
+
+  <Step title="Configure environment variables">
+    Create a `.env.local` file inside the `frontend/` directory with your Supabase project credentials:
+
+    ```bash
+    # frontend/.env.local
+
+    VITE_SUPABASE_URL=https://your-project.supabase.co
+    VITE_SUPABASE_ANON_KEY=your-anon-key
+    ```
+
+    You can find both values in your Supabase project dashboard under **Settings → API**.
+
+    <Note>
+      The app works without Supabase for core PDF parsing. If you leave these variables empty or skip this file entirely, the local `sguRegexParser.ts` will still parse and render your UTM SGU schedule. Supabase is only required for **cloud save**, **user authentication**, and **Google Calendar sync** features. Guest mode is fully functional.
+    </Note>
+  </Step>
+
+  <Step title="Start the Vite development server">
+    From inside the `frontend/` directory, run:
+
+    ```bash
+    npm run dev
+    ```
+
+    Vite will compile the project and start a local server. Open your browser and navigate to:
+
+    ```
+    http://localhost:5173
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
+  <Step title="Upload your UTM SGU schedule PDF">
+    Once the app loads, you'll see the Inforario landing page with a drag-and-drop upload zone. Drop your UTM SGU schedule PDF onto the zone (or click to browse). The app will:
+
+    1. Extract text from your PDF using **pdfjs-dist** in the browser.
+    2. Run the local **`sguRegexParser`** to identify subjects, time blocks, classroom codes, and teachers.
+    3. Fall back to the **Groq AI Edge Function** if the regex parser can't parse the document confidently.
+    4. Render your timetable in the interactive **Dashboard** view.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+---
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+## Run with Backend Services
+
+For the full experience — including the AI extraction fallback (`extract-schedule` Edge Function) and Google Calendar sync — you can run both the Vite dev server and the Supabase Edge Functions simultaneously.
+
+### Option A: Vite + Edge Functions (Recommended)
+
+The `dev:web` script uses `concurrently` to spin up both processes in a single terminal session:
+
+```bash
+# From the frontend/ directory
+npm run dev:web
+```
+
+This command runs two processes in parallel:
+
+| Process | Description |
+|---|---|
+| `FUNC` | Serves the `extract-schedule` Supabase Edge Function locally using the Supabase CLI, with its own `.env` file at `backend/supabase/functions/extract-schedule/.env` |
+| `VITE` | Starts the Vite dev server on `http://localhost:5173` |
+
+The output is color-coded (magenta for the Edge Function, cyan for Vite) so you can distinguish logs from each process.
+
+<Tip>
+  Make sure your `backend/supabase/functions/extract-schedule/.env` file includes a valid `GROQ_API_KEY` for the AI fallback to work. The Edge Function calls the `llama-3.3-70b-versatile` model on the Groq API.
 </Tip>
+
+### Option B: Local Supabase Instance
+
+If you want a fully self-contained local environment with a local PostgreSQL database and auth server, start the local Supabase stack first:
+
+```bash
+# From the frontend/ directory — starts Docker-based local Supabase
+npm run start:supa
+```
+
+This calls `cd ../backend && supabase start` under the hood and launches the full Supabase local stack (database, auth, storage, and Edge Functions runtime) via Docker. Once it's running, the CLI will print your local `SUPABASE_URL` and `ANON_KEY` — update your `frontend/.env.local` with those values, then run `npm run dev` or `npm run dev:web` as usual.
+
+<Warning>
+  `npm run start:supa` requires Docker to be running and the Supabase CLI to be installed globally (`npm install -g supabase`). This step is entirely optional — the app parses PDFs and renders schedules without it.
+</Warning>
+
+---
+
+## Available npm Scripts
+
+| Script | Command | Description |
+|---|---|---|
+| `dev` | `vite` | Starts the Vite dev server on port 5173 |
+| `build` | `tsc && vite build` | Type-checks and builds the production bundle |
+| `dev:web` | `concurrently ...` | Runs Vite + `extract-schedule` Edge Function concurrently |
+| `start:supa` | `cd ../backend && supabase start` | Starts the local Supabase Docker stack |

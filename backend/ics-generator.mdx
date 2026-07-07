@@ -1,0 +1,168 @@
+---
+title: "ICS Calendar File Generator Reference"
+sidebarTitle: "ICS Generator"
+description: "Reference for generateICS — the function that builds and downloads a standards-compliant iCalendar file from a parsed Inforario schedule."
+---
+
+`icsGenerator.ts` produces a standards-compliant iCalendar (`.ics`) file from an Inforario `Schedule` and triggers a direct browser download. The file contains one `VEVENT` per schedulable class session, each with a weekly recurrence rule spanning the entire semester. Import the resulting file into any calendar application that supports the iCalendar format (RFC 5545), such as Google Calendar, Apple Calendar, or Outlook.
+
+---
+
+## `generateICS()`
+
+```typescript
+generateICS(schedule: Schedule, semesterStart: Date, semesterEnd: Date): void
+```
+
+Builds the full `VCALENDAR` text in memory, creates a `Blob` URL, and programmatically clicks a hidden `<a>` element to trigger a browser download. Returns `void` — there is no programmatic return value.
+
+<ParamField path="schedule" type="Schedule" required>
+  The parsed schedule object. All sessions in `schedule.sessions` are iterated; only those that pass the filter criteria below produce a `VEVENT`.
+</ParamField>
+
+<ParamField path="semesterStart" type="Date" required>
+  The first day of the semester. Used as the anchor point for `getFirstOccurrence()` to compute the exact `DTSTART` and `DTEND` of the first weekly recurrence.
+</ParamField>
+
+<ParamField path="semesterEnd" type="Date" required>
+  The last day of the semester. Written into the `RRULE UNTIL` field in UTC format (`YYYYMMDDTHHMMSSZ`) using `Date.getUTCFullYear()` etc. specifically at `T235959Z`.
+</ParamField>
+
+**Sessions skipped (no VEVENT generated)**
+
+A session is silently omitted from the ICS output if any of the following are true:
+
+| Condition | Reason |
+|---|---|
+| `session.isVirtual === true` | No physical time slot to schedule |
+| `session.day` is `undefined` | Cannot determine recurrence day |
+| `session.startTime` is `undefined` | Cannot set `DTSTART` |
+| `session.endTime` is `undefined` | Cannot set `DTEND` |
+
+**File naming**
+
+```text
+horario_{academic_period}.ics
+```
+
+Spaces in `schedule.academic_period` are replaced with underscores. If `academic_period` is not set, the filename becomes `horario_horario.ics`.
+
+**VCALENDAR header fields**
+
+```text
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Inforario UTM//ES
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+```
+
+**Example VEVENT output**
+
+```text
+BEGIN:VEVENT
+UID:f47ac10b-58cc-4372-a567-0e02b2c3d479@inforario.utm
+DTSTAMP:20250415T120000Z
+DTSTART:20250414T080000
+DTEND:20250414T100000
+RRULE:FREQ=WEEKLY;UNTIL=20250831T235959Z;BYDAY=MO
+SUMMARY:CÁLCULO DIFERENCIAL
+LOCATION:Aula 204 - Piso 2
+DESCRIPTION:Docente: Ana García\nSGU Inforario UTM
+END:VEVENT
+```
+
+<Note>
+  `DTSTAMP` uses UTC format (`T000000Z`), but `DTSTART`/`DTEND` use **floating local time** (no UTC offset suffix). Make sure your calendar app is set to the correct local timezone when importing the file, or events may appear shifted by your UTC offset.
+</Note>
+
+---
+
+## Supporting functions
+
+### `getFirstOccurrence()`
+
+```typescript
+getFirstOccurrence(startDate: Date, dayName: string, startTime: string): Date
+```
+
+Calculates the exact date-time of the first class occurrence on or after `startDate` that falls on `dayName` with the given `startTime`.
+
+<ParamField path="startDate" type="Date" required>
+  Anchor date — typically the first day of the semester. The function creates an internal copy and never mutates the input.
+</ParamField>
+
+<ParamField path="dayName" type="string" required>
+  Spanish day name: `'Lunes'`, `'Martes'`, `'Miércoles'`, `'Jueves'`, `'Viernes'`, `'Sábado'`, or `'Domingo'`. Looked up in `DAY_TO_NUM` to get the `Date.getDay()` target value.
+</ParamField>
+
+<ParamField path="startTime" type="string" required>
+  Time string in `"HH:MM"` format. Hours and minutes are applied with `Date.setHours(hours, mins, 0, 0)`.
+</ParamField>
+
+**Return value**: A `Date` object set to the first occurrence of that weekday on or after `startDate`, with `startTime` applied as local hours/minutes.
+
+**Day-advance logic**:
+```typescript
+let daysToAdd = targetDay - currentDay;
+if (daysToAdd < 0) daysToAdd += 7; // wrap to next week
+```
+
+---
+
+### `formatICSDate()`
+
+```typescript
+formatICSDate(date: Date): string
+```
+
+Serialises a JavaScript `Date` object to the iCalendar floating datetime format: `YYYYMMDDTHHMMSS` (no `Z` suffix, no UTC conversion).
+
+<ParamField path="date" type="Date" required>
+  Any JavaScript `Date`. The function reads local time fields (`getFullYear`, `getMonth`, `getDate`, `getHours`, `getMinutes`). Seconds are always `00`.
+</ParamField>
+
+```typescript
+formatICSDate(new Date('2025-04-14T08:00:00'));
+// → "20250414T080000"
+```
+
+---
+
+## Constants
+
+### `DAY_TO_ICS_DAY`
+
+Maps Spanish day names to their two-letter iCalendar `BYDAY` codes used inside `RRULE`.
+
+```typescript
+const DAY_TO_ICS_DAY: Record<string, string> = {
+  'Lunes':     'MO',
+  'Martes':    'TU',
+  'Miércoles': 'WE',
+  'Jueves':    'TH',
+  'Viernes':   'FR',
+  'Sábado':    'SA',
+  'Domingo':   'SU',
+};
+```
+
+### `DAY_TO_NUM`
+
+Maps Spanish day names to their `Date.getDay()` index (0 = Sunday).
+
+```typescript
+const DAY_TO_NUM: Record<string, number> = {
+  'Domingo':   0,
+  'Lunes':     1,
+  'Martes':    2,
+  'Miércoles': 3,
+  'Jueves':    4,
+  'Viernes':   5,
+  'Sábado':    6,
+};
+```
+
+<Tip>
+  Only `'Lunes'` through `'Viernes'` appear in real UTM schedules. `'Sábado'` and `'Domingo'` are included in both maps for completeness and future extensibility.
+</Tip>

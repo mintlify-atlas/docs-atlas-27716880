@@ -1,0 +1,87 @@
+---
+title: "Environment Variables Reference for Inforario"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for all environment variables required by Inforario's frontend and Supabase Edge Functions, with descriptions and example values."
+---
+
+Inforario uses two distinct environment variable systems: the Vite frontend reads variables from a `frontend/.env.local` file at build time via `import.meta.env`, and any variable intended for the browser **must** be prefixed with `VITE_`. The Supabase Edge Functions (`extract-schedule` and `google-calendar-sync`) run on Deno and access secrets at runtime via `Deno.env.get()` — these are set through the Supabase CLI or the Supabase dashboard's Secrets UI and are never bundled into the client.
+
+## Frontend Variables
+
+These variables belong in `frontend/.env.local` and are injected into the Vite build. The `supabaseClient.ts` initialization logic reads them with `import.meta.env.VITE_SUPABASE_URL` and `import.meta.env.VITE_SUPABASE_ANON_KEY`, falling back to the compile-time constants in `src/constants.ts` if the env file is absent.
+
+<ParamField query="VITE_SUPABASE_URL" type="string" required>
+  The full URL of your Supabase project. Found in **Settings → API → Project URL** in the Supabase dashboard.
+
+  Example: `https://abcdefgh.supabase.co`
+</ParamField>
+
+<ParamField query="VITE_SUPABASE_ANON_KEY" type="string" required>
+  The anon/public API key for your Supabase project. Found in **Settings → API → Project API keys → `anon public`**. This key is safe to expose in the browser because Row Level Security policies enforce data access rules.
+
+  Example: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...`
+</ParamField>
+
+## Edge Function Secrets
+
+These secrets are never stored in `.env.local`. They are deployed to the Supabase project with `supabase secrets set` or configured through the dashboard under **Settings → Edge Functions → Secrets**. The Edge Functions read them at runtime with `Deno.env.get()`.
+
+<ParamField query="GROQ_API_KEY" type="string" required>
+  API key for the Groq inference service. Required by the `extract-schedule` Edge Function to call `https://api.groq.com/openai/v1/chat/completions`. Obtain from [console.groq.com](https://console.groq.com).
+
+  Example: `gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+</ParamField>
+
+<ParamField query="GROQ_MODEL" type="string">
+  The Groq model identifier used for schedule extraction. Defaults to `llama-3.3-70b-versatile` if not set. Override this to experiment with faster or more capable models available on Groq.
+
+  Default: `llama-3.3-70b-versatile`
+</ParamField>
+
+<ParamField query="GOOGLE_CLIENT_ID" type="string" required>
+  The OAuth 2.0 Client ID from Google Cloud Console. Required by the `google-calendar-sync` Edge Function to refresh access tokens. Create or locate this in **Google Cloud Console → APIs & Services → Credentials**.
+
+  Example: `303071798512-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com`
+</ParamField>
+
+<ParamField query="GOOGLE_CLIENT_SECRET" type="string" required>
+  The OAuth 2.0 Client Secret paired with `GOOGLE_CLIENT_ID`. Also found in **Google Cloud Console → APIs & Services → Credentials**. Never expose this in client-side code.
+
+  Example: `GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx`
+</ParamField>
+
+<ParamField query="SUPABASE_URL" type="string">
+  Auto-injected by the Supabase Edge Functions runtime. The `google-calendar-sync` function reads it with `Deno.env.get('SUPABASE_URL')` to instantiate a Supabase client server-side. You do not need to set this manually for deployed functions.
+</ParamField>
+
+<ParamField query="SUPABASE_ANON_KEY" type="string">
+  Auto-injected by the Supabase Edge Functions runtime alongside `SUPABASE_URL`. Used by `google-calendar-sync` to create an authenticated Supabase client that respects the user's JWT passed in the `Authorization` header.
+</ParamField>
+
+## Example `.env.local`
+
+Place this file at `frontend/.env.local`. It is already listed in `.gitignore` by Vite's default scaffold.
+
+```bash
+# frontend/.env.local
+
+# Supabase project credentials (required for cloud features)
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+# Optional: override the Groq model for local Edge Function testing
+# GROQ_MODEL=llama-3.3-70b-versatile
+```
+
+For local Edge Function development, create a separate env file at `backend/supabase/functions/extract-schedule/.env`:
+
+```bash
+# backend/supabase/functions/extract-schedule/.env
+
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GROQ_MODEL=llama-3.3-70b-versatile
+```
+
+<Note>
+  Variables without the `VITE_` prefix are **not** exposed to the browser bundle — Vite strips them at build time. Never commit `.env.local` or any file containing real API keys or secrets to version control. Add `*.env.local` and `*.env` to your `.gitignore` if not already present.
+</Note>

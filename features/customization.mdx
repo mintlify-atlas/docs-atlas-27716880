@@ -1,0 +1,218 @@
+---
+title: "Customizing Your Schedule Appearance"
+sidebarTitle: "Customization"
+description: "Change subject colors, switch visual themes, adjust font scale, rename your schedule, and save changes to Supabase from the Inforario dashboard."
+---
+
+Inforario gives you full control over how your timetable looks and is labeled — without ever re-uploading or re-parsing. The `useScheduleCustomizer` hook manages theme and color state, while the `CustomizerSidebar` exposes those controls in a slide-in panel that can be opened from the dashboard header at any time.
+
+## useScheduleCustomizer Hook
+
+`useScheduleCustomizer` is a lightweight hook that holds the active theme and exposes a `changeSubjectColor` function. It is designed to sit between the sidebar UI and the schedule state managed by `App.tsx`.
+
+```typescript
+// useScheduleCustomizer.ts
+export const useScheduleCustomizer = ({
+  schedule,
+  setSchedule,
+  onSaveSchedule,
+}: UseScheduleCustomizerProps) => {
+  const [theme, setTheme] = useState<ScheduleTheme>('DEFAULT');
+  const [fontScale, setFontScale] = useState<number>(1);
+
+  const changeSubjectColor = (subject: string, color: string) => {
+    if (!schedule) return;
+
+    // Update color on every session that matches this subject name
+    const updatedSessions = schedule.sessions.map((session) => {
+      if (session.subject.toUpperCase() === subject.toUpperCase()) {
+        return { ...session, color };
+      }
+      return session;
+    });
+
+    const updatedSchedule: Schedule = {
+      ...schedule,
+      sessions: updatedSessions,
+      lastUpdated: new Date(),
+    };
+
+    setSchedule(updatedSchedule);
+
+    if (onSaveSchedule) {
+      onSaveSchedule(updatedSchedule);  // optional auto-save callback
+    }
+  };
+
+  return { theme, setTheme, fontScale, setFontScale, changeSubjectColor };
+};
+```
+
+The color match is case-insensitive — if the subject name appears in different capitalizations across sessions (which can happen with the AI extraction path), all variants are updated together.
+
+## ScheduleTheme
+
+Four visual presets are available, each applying a different color palette, font family, and border style to both the on-screen grid and the exported PDF:
+
+<CardGroup cols={2}>
+  <Card title="DEFAULT" icon="leaf">
+    Green-tinted academic style with rounded session cards, soft shadows, and a forest-green header. Uses Helvetica in the PDF export.
+  </Card>
+  <Card title="MINIMALIST" icon="minus">
+    Black-and-white with hard borders and no rounded corners. Session cards show a colored left accent stripe instead of a filled background. Uses Times New Roman in the PDF export.
+  </Card>
+  <Card title="SCHOOL" icon="pencil">
+    Warm amber tones, dotted grid lines, polka-dot background, and chunky black-bordered cards with a drop shadow. Uses Courier in the PDF export.
+  </Card>
+  <Card title="NEON" icon="bolt">
+    Dark slate background with cyan borders and a glow effect. Session cards have a neon accent stripe and a backdrop blur. Uses Courier in the PDF export.
+  </Card>
+</CardGroup>
+
+The `ScheduleTheme` type is defined as a union in `sgu.ts`:
+
+```typescript
+export type ScheduleTheme = 'DEFAULT' | 'MINIMALIST' | 'SCHOOL' | 'NEON';
+```
+
+Switching themes in the `CustomizerSidebar` calls `setTheme` from `useScheduleCustomizer`, which is forwarded to `ScheduleGrid` as the `theme` prop and also used by `handleDownload` in `ScheduleDashboard` when generating the PDF.
+
+## Subject Color Palette
+
+When a schedule is first parsed, each distinct subject is assigned a color from the default round-robin palette in the order subjects appear in the PDF:
+
+```typescript
+// sguRegexParser.ts
+const SUBJECT_COLORS = [
+  '#22C55E', // green
+  '#3B82F6', // blue
+  '#F97316', // orange
+  '#EF4444', // red
+  '#A855F7', // purple
+  '#06B6D4', // cyan
+  '#EAB308', // yellow
+];
+```
+
+Colors cycle back to the beginning once all seven have been used. You can override any subject's color at any time from the `CustomizerSidebar`.
+
+## CustomizerSidebar
+
+The sidebar slides in from the right when `customizerOpen` is `true` (toggled by the **Personalizar** button in the dashboard header). It contains:
+
+- **Theme selector**: a set of buttons for `DEFAULT`, `MINIMALIST`, `SCHOOL`, and `NEON`.
+- **Color pickers per subject**: one color input for each unique subject name found in `schedule.sessions`. Changing a color calls `handleColorChange` in `ScheduleDashboard`, which updates the sessions and persists via `saveScheduleToDB`.
+
+```typescript
+// ScheduleDashboard.tsx — color change handler
+const handleColorChange = async (subject: string, color: string) => {
+  if (!currentSchedule) return;
+
+  const updatedSessions = currentSchedule.sessions.map((s) =>
+    s.subject === subject ? { ...s, color } : s
+  );
+
+  const updatedSchedule = { ...currentSchedule, sessions: updatedSessions };
+  setCurrentSchedule(updatedSchedule);
+
+  if (deviceId && updatedSchedule.id) {
+    await saveScheduleToDB(deviceId, updatedSchedule);
+  }
+};
+```
+
+## Inline Title Editing
+
+The schedule title in the dashboard header is editable with a single click. The flow uses two pieces of state: `isEditingTitle` (toggles the input vs. heading) and `tempTitle` (holds the draft value).
+
+<Steps>
+  <Step title="Click the title">
+    Clicking the `<h2>` calls `startEditingTitle()`, which copies `currentSchedule.title` into `tempTitle` and sets `isEditingTitle` to `true`.
+  </Step>
+  <Step title="Type a new name">
+    An `<input>` with `autoFocus` replaces the heading. The `onChange` handler updates `tempTitle` on every keystroke.
+  </Step>
+  <Step title="Save">
+    Press **Enter** or click the `Check` icon, or blur the field. `saveTitle()` sets `currentSchedule.title = tempTitle`, then calls `saveScheduleToDB` if the schedule has an `id`.
+  </Step>
+</Steps>
+
+## Font Scale
+
+`fontScale` defaults to `1.0` and is adjusted with the **ZoomIn** (`+0.1`) and **ZoomOut** (`−0.1`) buttons, clamped between `0.7` and `1.5`.
+
+```typescript
+// ScheduleDashboard.tsx
+const handleZoomIn  = () => setFontScale(prev => Math.min(prev + 0.1, 1.5));
+const handleZoomOut = () => setFontScale(prev => Math.max(prev - 0.1, 0.7));
+```
+
+The current percentage is displayed between the two zoom buttons. `fontScale` is passed as a prop to `ScheduleGrid`, where it is multiplied into every `fontSize` inline style — header labels, time labels, session details, and the PDF export all respect the same scale factor.
+
+## Saving to Supabase
+
+`saveScheduleToDB` in `supabaseClient.ts` persists the current schedule to the `schedules` table. It performs an **UPDATE** if the schedule already has an `id`, or an **INSERT** if it is new:
+
+```typescript
+// supabaseClient.ts
+export const saveScheduleToDB = async (userId: string, schedule: Schedule) => {
+  if (!isSupabaseConfigured() || !isUUID(userId)) return null;
+
+  if (schedule.id) {
+    // UPDATE existing row
+    const { data, error } = await supabase
+      .from('schedules')
+      .update({
+        title:         schedule.title,
+        academic_period: schedule.academic_period,
+        schedule_data: schedule.sessions,
+        faculty:       schedule.faculty,
+        last_updated:  new Date().toISOString(),
+      })
+      .eq('id', schedule.id)
+      .select();
+
+    if (error) throw error;
+    return data;
+  } else {
+    // INSERT new row
+    const { data, error } = await supabase
+      .from('schedules')
+      .insert({
+        user_id:       userId,
+        title:         schedule.title,
+        academic_period: schedule.academic_period,
+        schedule_data: schedule.sessions,
+        faculty:       schedule.faculty,
+        last_updated:  new Date().toISOString(),
+      })
+      .select();
+
+    if (error) throw error;
+    return data;
+  }
+};
+```
+
+The `sessions` array is stored as JSON in the `schedule_data` column. The returned row includes the newly assigned `id`, which is written back to `newSchedule.id` in `useScheduleUpload` so subsequent saves go to the UPDATE path.
+
+<Tip>
+  Changes to subject colors and the schedule title are saved automatically each time you interact with the customizer — no separate save button is required for those operations. For anonymous users (identified by a device UUID rather than a Supabase auth UID), `isUUID()` returns `false` and the database write is silently skipped, keeping your changes local to the current session.
+</Tip>
+
+## Customization Options at a Glance
+
+<CardGroup cols={2}>
+  <Card title="Subject colors" icon="palette">
+    Override the auto-assigned color for any subject from the `CustomizerSidebar`. All sessions sharing the same subject name update simultaneously.
+  </Card>
+  <Card title="Visual theme" icon="swatchbook">
+    Choose from DEFAULT, MINIMALIST, SCHOOL, or NEON. The theme applies to both the on-screen grid and the exported PDF.
+  </Card>
+  <Card title="Font scale" icon="text-size">
+    Zoom in or out between 70 % and 150 % using the ZoomIn / ZoomOut controls, available in both desktop and mobile layouts.
+  </Card>
+  <Card title="Schedule title" icon="pencil">
+    Click the title in the dashboard header to rename your schedule inline. The change is persisted to Supabase automatically for logged-in users.
+  </Card>
+</CardGroup>

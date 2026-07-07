@@ -1,0 +1,183 @@
+---
+title: "Local Development Setup for Inforario"
+sidebarTitle: "Local Development"
+description: "Run Inforario's Vite frontend and Supabase Edge Functions locally using concurrently, with hot reload for both the UI and serverless functions."
+---
+
+Inforario's development experience is split into two independent layers: a Vite-powered React frontend and a Supabase backend composed of a local PostgreSQL database, Auth server, and Deno Edge Functions. You can work on the UI entirely offline using the built-in regex parser, or spin up the full stack — including AI-powered extraction — with a single command.
+
+## Prerequisites
+
+Before running the project locally, make sure you have the following installed:
+
+<CardGroup cols={3}>
+  <Card title="Node.js 18+" icon="node-js">
+    Required to run the Vite dev server, install dependencies, and execute `npm` scripts. Version 18 or later is recommended.
+  </Card>
+  <Card title="Supabase CLI" icon="database">
+    Used to start the local Supabase stack, serve Edge Functions, and push secrets. Install via the [Supabase CLI docs](https://supabase.com/docs/guides/cli/getting-started).
+  </Card>
+  <Card title="Deno 2" icon="code">
+    Required by the Edge Functions runtime. The local Supabase stack manages Deno automatically, but having it installed separately is helpful for linting and testing functions in isolation.
+  </Card>
+</CardGroup>
+
+## Running the Frontend
+
+### Frontend Only (No Backend)
+
+The fastest way to start is to run just the Vite dev server. PDF parsing via the built-in regex engine works without any Supabase connection — upload a UTM SGU schedule PDF and the app processes it entirely in the browser.
+
+```bash
+cd frontend
+npm install      # first time only
+npm run dev
+```
+
+The dev server starts at **http://localhost:3000** (configured in `vite.config.ts` with `server.port: 3000` and `host: '0.0.0.0'`).
+
+<Note>
+  If `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are not present in `frontend/.env.local`, the Supabase client falls back to the compile-time constants in `src/constants.ts` and initialises a dummy no-op client that prevents white-screen crashes. Cloud features (save to cloud, Google Calendar sync) will return graceful error messages rather than crashing.
+</Note>
+
+### Frontend + AI Extraction Edge Function
+
+To test the Groq-powered AI parsing locally, use the `dev:web` script. It uses `concurrently` to run both the Supabase Edge Function server and the Vite dev server simultaneously, with colour-coded terminal output (`bgMagenta` for `FUNC`, `bgCyan` for `VITE`):
+
+```bash
+cd frontend
+npm run dev:web
+```
+
+Under the hood this runs:
+
+```bash
+concurrently --names "FUNC,VITE" -c "bgMagenta,bgCyan" \
+  "cd ../backend && supabase functions serve extract-schedule --env-file ./supabase/functions/extract-schedule/.env" \
+  "vite"
+```
+
+The `extract-schedule` function is served locally with its secrets loaded from `backend/supabase/functions/extract-schedule/.env`. Make sure this file exists and contains at least `GROQ_API_KEY` before running this command. See the [Environment Variables](/configuration/environment-variables) page for the full format.
+
+<Tip>
+  Use the `dev:web` script whenever you need to test AI-powered schedule extraction locally. For day-to-day UI work — styling, component changes, layout tweaks — the plain `npm run dev` command is faster and has no external dependencies.
+</Tip>
+
+### Full Local Supabase Stack
+
+To run the complete local backend (PostgreSQL, Auth, Storage, Studio, and Inbucket):
+
+```bash
+cd frontend
+npm run start:supa
+```
+
+This is a convenience alias that runs `cd ../backend && supabase start`. The local services come up on these ports (defined in `backend/supabase/config.toml`):
+
+| Service | URL |
+|---|---|
+| API (PostgREST) | `http://localhost:54321` |
+| Database | `localhost:54322` |
+| Studio | `http://localhost:54323` |
+| Inbucket (email) | `http://localhost:54324` |
+| Analytics | `http://localhost:54327` |
+| Edge Function inspector | `http://localhost:8083` |
+
+<Warning>
+  The `google-calendar-sync` Edge Function requires a **live Supabase project** with real user tokens stored in the `user_calendar_tokens` table — it cannot operate in a fully offline mode. The function calls `supabase.auth.getUser()` to verify the caller's JWT and then reads the user's Google OAuth tokens from the database. Testing this function requires a user who has already completed the Google OAuth flow against the remote Supabase project.
+</Warning>
+
+## Available npm Scripts
+
+All scripts are defined in `frontend/package.json`:
+
+```json
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "start:supa": "cd ../backend && supabase start",
+    "dev:web": "concurrently --names \"FUNC,VITE\" -c \"bgMagenta,bgCyan\" \"cd ../backend && supabase functions serve extract-schedule --env-file ./supabase/functions/extract-schedule/.env\" \"vite\""
+  }
+}
+```
+
+| Script | Command | Description |
+|---|---|---|
+| `dev` | `npm run dev` | Start Vite dev server only |
+| `build` | `npm run build` | Type-check with `tsc`, then build for production |
+| `start:supa` | `npm run start:supa` | Start local Supabase stack (run from `frontend/`) |
+| `dev:web` | `npm run dev:web` | Vite + `extract-schedule` Edge Function concurrently |
+
+## TypeScript Configuration
+
+The `frontend/tsconfig.json` targets **ES2022** and uses the `bundler` module resolution strategy, which is optimised for Vite's ESM-native build pipeline.
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "types": ["node", "gapi", "gapi.calendar"],
+    "paths": { "@/*": ["./*"] }
+  }
+}
+```
+
+Key constraints to be aware of when contributing:
+
+- **`isolatedModules: true`** — every file must be a proper ES module (have at least one `import` or `export`). Type-only imports must use `import type`.
+- **`noEmit: true`** — TypeScript is used purely for type checking; Vite's esbuild handles transpilation. Running `tsc` alone will not produce output files.
+- **`allowImportingTsExtensions: true`** — enables importing `.ts` and `.tsx` files with their full extension, which works with Vite's dev server but requires `noEmit: true`.
+- **`experimentalDecorators: true` + `useDefineForClassFields: false`** — legacy decorator semantics are enabled for compatibility with certain Three.js / R3F class patterns.
+- **`@types/gapi` and `@types/gapi.calendar`** — global type declarations for the Google API client loaded at runtime for the Google Calendar integration.
+
+Vite environment types (`import.meta.env.VITE_*`) are declared in `src/vite-env.d.ts`, which references `vite/client`. Without this file, TypeScript will report errors on `import.meta.env` access.
+
+## Vite Configuration
+
+```ts
+// frontend/vite.config.ts
+import path from 'path';
+import { defineConfig, loadEnv } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, '.', '');
+  return {
+    server: {
+      port: 3000,
+      host: '0.0.0.0',
+    },
+    plugins: [react()],
+    define: {
+      'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+    },
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, '.'),
+      },
+    },
+  };
+});
+```
+
+Notable points:
+
+- **`@vitejs/plugin-react`** — uses the Babel-based React Fast Refresh plugin for instant component updates without losing state during development. The project is on `^5.0.0`, compatible with React 19.
+- **`host: '0.0.0.0'`** — the dev server binds to all network interfaces, making it accessible from other devices on the same network (or from a Docker container).
+- **`process.env` shims** — the `define` block polyfills `process.env.GEMINI_API_KEY` for any third-party library that expects Node.js-style env access.
+- **PDF.js worker** — `pdfjs-dist` loads its worker from the CDN at runtime (`https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`) rather than bundling it, keeping the production bundle lean.
+- **`@` path alias** — resolves to the `frontend/` root, so `import Foo from '@/components/Foo'` works from any depth in `src/`.

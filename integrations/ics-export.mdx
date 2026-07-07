@@ -1,0 +1,226 @@
+---
+title: "Export Your Schedule as an ICS Calendar File"
+sidebarTitle: "ICS Export"
+description: "Generate a standards-compliant iCalendar (.ics) file from your Inforario schedule for import into Apple Calendar, Outlook, or any calendar application."
+---
+
+Inforario can export your parsed UTM schedule as a standards-compliant `.ics` file (iCalendar format), letting you import your timetable into any calendar application that supports the RFC 5545 standard — including Apple Calendar, Google Calendar, Microsoft Outlook, Thunderbird, and others. The file encodes every class session as a `VEVENT` with a weekly recurrence rule, so each subject appears automatically on the correct weekday for the entire academic semester without any manual entry.
+
+<Note>
+  The ICS file uses **floating local time** — date-time values are written without a UTC offset (e.g. `20240311T080000` rather than `20240311T110000Z`). Import the file on a device already set to your local timezone to ensure classes appear at the correct time. If you import across timezones, adjust your calendar application's import settings accordingly.
+</Note>
+
+---
+
+## How to Export
+
+<Steps>
+  <Step title="Open the Calendar Export Modal">
+    From the schedule dashboard, click the **Export Calendar** button. The `CalendarModal` opens and presents two export options.
+  </Step>
+  <Step title="Click Generate and Download (.ics)">
+    Click the **Generar y Descargar (.ics)** button. Inforario internally computes the semester window (next Monday as start, approximately 4.5 months ahead as end) and calls `generateICS(schedule, semesterStart, semesterEnd)`.
+  </Step>
+  <Step title="Open the Downloaded File">
+    Your browser downloads a file named `horario_{academic_period}.ics`. Open it with your calendar application. Most operating systems will prompt you to choose a calendar to import into.
+  </Step>
+</Steps>
+
+<Tip>
+  On iOS and macOS, double-clicking the `.ics` file opens Apple Calendar and imports all events in one tap. On Android, use Google Calendar → **Import** from the hamburger menu.
+</Tip>
+
+---
+
+## `generateICS`
+
+The single exported function from `icsGenerator.ts`. It builds the full `VCALENDAR` text, creates a `Blob`, and triggers a browser file download — all without a server round-trip.
+
+```typescript
+import { generateICS } from '@/services/ics/icsGenerator';
+
+generateICS(
+  schedule,       // Schedule — the full parsed timetable
+  semesterStart,  // Date — first day of the academic semester
+  semesterEnd     // Date — last day of the academic semester
+);
+// returns void — triggers a browser download
+```
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    <ParamField path="schedule" type="Schedule" required>
+      The full parsed schedule object. Its `sessions` array is iterated to produce `VEVENT` entries. The `academic_period` field is used to name the downloaded file.
+    </ParamField>
+    <ParamField path="semesterStart" type="Date" required>
+      The first day of the academic semester. Used by `getFirstOccurrence` to compute the exact `DTSTART` of each class.
+    </ParamField>
+    <ParamField path="semesterEnd" type="Date" required>
+      The last day of the academic semester. Serialized to `YYYYMMDDTHHMMSSZ` (UTC midnight + `T235959Z`) and used as the `UNTIL` value in each `RRULE`.
+    </ParamField>
+  </Accordion>
+  <Accordion title="Sessions that are excluded">
+    A session is **skipped** and will not appear as a `VEVENT` if any of the following are true:
+
+    - `session.isVirtual === true` — the session has no physical time slot
+    - `session.day` is `undefined` or empty
+    - `session.startTime` is `undefined` or empty
+    - `session.endTime` is `undefined` or empty
+
+    Unlike the Google Calendar sync, the ICS export does **not** skip `conflict: true` sessions — conflicting classes are exported as-is and the user's calendar application will display the overlap.
+  </Accordion>
+  <Accordion title="File naming">
+    The downloaded file is named using the schedule's `academic_period` field, with spaces replaced by underscores:
+
+    ```typescript
+    const cleanPeriod = (schedule.academic_period || 'horario').replace(/\s+/g, '_');
+    a.download = `horario_${cleanPeriod}.ics`;
+    // e.g. "horario_2024-I.ics" or "horario_Segundo_Semestre_2024.ics"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `getFirstOccurrence`
+
+An internal helper that calculates the exact `Date` of the first class occurrence on or after the semester start date, for a given weekday and start time.
+
+```typescript
+function getFirstOccurrence(startDate: Date, dayName: string, startTime: string): Date
+```
+
+<ParamField path="startDate" type="Date" required>
+  The semester start date. The function walks forward from this date to find the first matching weekday.
+</ParamField>
+<ParamField path="dayName" type="string" required>
+  A Spanish day name: `'Lunes'`, `'Martes'`, `'Miércoles'`, `'Jueves'`, or `'Viernes'`.
+</ParamField>
+<ParamField path="startTime" type="string" required>
+  The class start time in `"HH:mm"` format (e.g. `"08:00"`). Applied directly to the resulting `Date` object.
+</ParamField>
+
+The function maps Spanish day names to JavaScript `Date.getDay()` indices via a lookup table, computes the forward distance to the target weekday, and applies the time components using `setHours`.
+
+---
+
+## ICS File Structure
+
+### VCALENDAR Header
+
+Every generated file opens with a standard header block:
+
+```text
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Inforario UTM//ES
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+```
+
+### Day-to-ICS Mapping
+
+Spanish weekday names from the schedule are mapped to RFC 5545 `BYDAY` tokens:
+
+| Spanish    | ICS Token |
+|------------|-----------|
+| Lunes      | `MO`      |
+| Martes     | `TU`      |
+| Miércoles  | `WE`      |
+| Jueves     | `TH`      |
+| Viernes    | `FR`      |
+| Sábado     | `SA`      |
+| Domingo    | `SU`      |
+
+### VEVENT Fields
+
+Each class session produces one `VEVENT` block:
+
+| Field         | Value                                                                 |
+|---------------|-----------------------------------------------------------------------|
+| `UID`         | `{crypto.randomUUID()}@inforario.utm` — unique per event per export  |
+| `DTSTAMP`     | UTC timestamp of export generation (`YYYYMMDDTHHMMSSZ`)              |
+| `DTSTART`     | Floating local datetime of the first occurrence (`YYYYMMDDTHHMMSS`)  |
+| `DTEND`       | Floating local datetime of the first occurrence end                  |
+| `RRULE`       | `FREQ=WEEKLY;UNTIL={semesterEnd}T235959Z;BYDAY={MO/TU/WE/TH/FR}`    |
+| `SUMMARY`     | Subject name (`session.subject`)                                     |
+| `LOCATION`    | Classroom / building (`session.location`)                            |
+| `DESCRIPTION` | `Docente: {teacher}\nSGU Inforario UTM`                              |
+
+### Example VEVENT
+
+```text
+BEGIN:VEVENT
+UID:3f2504e0-4f89-11d3-9a0c-0305e82c3301@inforario.utm
+DTSTAMP:20240301T120000Z
+DTSTART:20240304T080000
+DTEND:20240304T100000
+RRULE:FREQ=WEEKLY;UNTIL=20240715T235959Z;BYDAY=MO
+SUMMARY:Programación Orientada a Objetos
+LOCATION:Aula 301 - Bloque A
+DESCRIPTION:Docente: Ing. María Torres\nSGU Inforario UTM
+END:VEVENT
+```
+
+### Full File Example
+
+```text
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Inforario UTM//ES
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:3f2504e0-4f89-11d3-9a0c-0305e82c3301@inforario.utm
+DTSTAMP:20240301T120000Z
+DTSTART:20240304T080000
+DTEND:20240304T100000
+RRULE:FREQ=WEEKLY;UNTIL=20240715T235959Z;BYDAY=MO
+SUMMARY:Programación Orientada a Objetos
+LOCATION:Aula 301 - Bloque A
+DESCRIPTION:Docente: Ing. María Torres\nSGU Inforario UTM
+END:VEVENT
+BEGIN:VEVENT
+UID:7f9e8d12-a3b4-4c56-8e90-1234567890ab@inforario.utm
+DTSTAMP:20240301T120000Z
+DTSTART:20240306T100000
+DTEND:20240306T120000
+RRULE:FREQ=WEEKLY;UNTIL=20240715T235959Z;BYDAY=WE
+SUMMARY:Cálculo Diferencial
+LOCATION:Aula 205 - Bloque B
+DESCRIPTION:Docente: Lcdo. Carlos Vega\nSGU Inforario UTM
+END:VEVENT
+END:VCALENDAR
+```
+
+---
+
+## Compatibility
+
+<CardGroup cols={2}>
+  <Card title="Apple Calendar" icon="apple">
+    Double-click the `.ics` file on macOS or iOS. All events import immediately into the default calendar. The recurrence rule is fully supported.
+  </Card>
+  <Card title="Google Calendar" icon="google">
+    Use **Settings → Import** and select the `.ics` file. Alternatively, drag and drop the file onto the Google Calendar web interface.
+  </Card>
+  <Card title="Microsoft Outlook" icon="microsoft">
+    Double-click the `.ics` file or use **File → Open & Export → Import/Export → Import an iCalendar (.ics) file**.
+  </Card>
+  <Card title="Thunderbird / Other" icon="calendar">
+    Any RFC 5545-compliant calendar application can import the file. The `METHOD:PUBLISH` header signals a static schedule (not an invitation).
+  </Card>
+</CardGroup>
+
+---
+
+## ICS vs Google Calendar Sync
+
+| Feature | ICS Export | Google Calendar Sync |
+|---|---|---|
+| Requires Supabase account | ❌ No | ✅ Yes |
+| Works offline | ✅ Yes | ❌ No |
+| Skips conflicted sessions | ❌ No (exported as-is) | ✅ Yes |
+| Skips virtual sessions | ✅ Yes | ✅ Yes |
+| Updates automatically | ❌ Re-export needed | ❌ Re-sync needed |
+| Calendar app support | Any RFC 5545 app | Google Calendar only |

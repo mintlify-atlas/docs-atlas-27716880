@@ -1,0 +1,393 @@
+---
+title: "TypeScript Types and Interfaces Reference"
+sidebarTitle: "Types Reference"
+description: "Complete reference for all TypeScript interfaces, enums, and type aliases used across Inforario's frontend codebase."
+---
+
+Inforario's type definitions live under `src/types/` and are re-exported through a single barrel at `src/types/index.ts`. This page documents every public type, interface, enum, and constant in the order they are defined across those files, plus the `CalendarEventInput` and `SyncCalendarResponse` interfaces from the Google Calendar Edge service.
+
+---
+
+## From `types/index.ts`
+
+### `AppView`
+
+Controls which top-level view the application renders. Managed by the root `App` component.
+
+```typescript
+export enum AppView {
+  LANDING   = 'LANDING',
+  DASHBOARD = 'DASHBOARD',
+  ABOUT     = 'ABOUT',
+  LOGIN     = 'LOGIN',
+  PROFILE   = 'PROFILE',
+}
+```
+
+<ResponseField name="LANDING" type="string">
+  The public landing/home page shown to unauthenticated users.
+</ResponseField>
+<ResponseField name="DASHBOARD" type="string">
+  The main schedule viewer and editor, accessible to all users (including guests).
+</ResponseField>
+<ResponseField name="ABOUT" type="string">
+  Informational page describing the application.
+</ResponseField>
+<ResponseField name="LOGIN" type="string">
+  Authentication page (sign-in / sign-up / password reset).
+</ResponseField>
+<ResponseField name="PROFILE" type="string">
+  Authenticated user's profile and saved schedules page.
+</ResponseField>
+
+---
+
+### `Feature`
+
+Represents individual app capabilities gated behind feature-flag checks or used to track analytics events.
+
+```typescript
+export enum Feature {
+  UPLOAD           = 'UPLOAD',
+  PROCESS          = 'PROCESS',
+  RESOLVE_CONFLICT = 'RESOLVE_CONFLICT',
+  EDIT_NAME        = 'EDIT_NAME',
+  SAVE_CLOUD       = 'SAVE_CLOUD',
+  CUSTOMIZE_COLOR  = 'CUSTOMIZE_COLOR',
+  DOWNLOAD_PDF     = 'DOWNLOAD_PDF',
+  SYNC_CALENDAR    = 'SYNC_CALENDAR',
+}
+```
+
+| Value | Description |
+|---|---|
+| `UPLOAD` | Upload a schedule file (PDF or image) |
+| `PROCESS` | Run the local or AI parser on the uploaded file |
+| `RESOLVE_CONFLICT` | Display and handle detected time conflicts |
+| `EDIT_NAME` | Rename a schedule or session title |
+| `SAVE_CLOUD` | Persist the current schedule to Supabase |
+| `CUSTOMIZE_COLOR` | Change the color assigned to a subject |
+| `DOWNLOAD_PDF` | Export the schedule grid as a PDF |
+| `SYNC_CALENDAR` | Push sessions to Google Calendar via Edge Function |
+
+---
+
+### `DayOfWeek`
+
+A string union type representing the five weekdays used in UTM schedules. Only these values are ever stored in `ClassSession.day`.
+
+```typescript
+export type DayOfWeek = 'Lunes' | 'Martes' | 'Miércoles' | 'Jueves' | 'Viernes';
+```
+
+---
+
+### `DAYS`
+
+The ordered constant array of all weekdays. Used to render schedule grid columns Monday–Friday.
+
+```typescript
+export const DAYS: DayOfWeek[] = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
+```
+
+---
+
+### `ScheduleTheme`
+
+Controls the visual appearance preset applied to the schedule grid.
+
+```typescript
+export type ScheduleTheme = 'DEFAULT' | 'MINIMALIST' | 'SCHOOL' | 'NEON';
+```
+
+| Value | Description |
+|---|---|
+| `DEFAULT` | Standard color-coded grid |
+| `MINIMALIST` | Low-contrast, muted palette |
+| `SCHOOL` | Bold, high-readability design |
+| `NEON` | Dark background with bright accent colors |
+
+---
+
+## From `types/sgu.ts`
+
+### `ClassSession`
+
+The core data unit. Represents a single scheduled class occurrence (or a virtual/unscheduled subject). Every parsed schedule is ultimately a `ClassSession[]`.
+
+```typescript
+export interface ClassSession {
+  id: string;
+  subject: string;
+  subject_faculty?: string;
+  day?: DayOfWeek;
+  startTime?: string;
+  endTime?: string;
+  teacher: string;
+  location: string;
+  floor?: string;
+  isVirtual?: boolean;
+  color?: string;
+  conflict?: boolean;
+}
+```
+
+<ResponseField name="id" type="string" required>
+  A UUID generated with `crypto.randomUUID()` at parse time. Used as React key and for database identity.
+</ResponseField>
+
+<ResponseField name="subject" type="string" required>
+  The normalised subject name in UPPERCASE. Prefixes like `"TECNOLOGÍAS DE LA"` and parenthetical codes (e.g. `"(A19)"`) are stripped by the parser.
+</ResponseField>
+
+<ResponseField name="subject_faculty" type="string">
+  The faculty that owns this specific subject. Useful when a student's schedule spans multiple faculties. Optional — may be `undefined` for AI-parsed sessions.
+</ResponseField>
+
+<ResponseField name="day" type="DayOfWeek">
+  Day of the week. `undefined` for virtual or unscheduled subjects.
+</ResponseField>
+
+<ResponseField name="startTime" type="string">
+  Start time in `"HH:mm"` 24-hour format (e.g. `"08:00"`). `undefined` for virtual sessions.
+</ResponseField>
+
+<ResponseField name="endTime" type="string">
+  End time in `"HH:mm"` 24-hour format (e.g. `"10:00"`). `undefined` for virtual sessions.
+</ResponseField>
+
+<ResponseField name="teacher" type="string" required>
+  Normalised teacher name in `"Firstname Lastname"` format. Defaults to `'Sin asignar'` or `'N/A'` when unknown.
+</ResponseField>
+
+<ResponseField name="location" type="string" required>
+  Human-readable classroom string, e.g. `"Aula 204 - Piso 2"` or `"Lab. Computación 306 - Piso 3"`. Virtual sessions use `"Virtual"` or `"Materia Virtual"`.
+</ResponseField>
+
+<ResponseField name="floor" type="string">
+  Extracted floor number as a string (e.g. `"2"`). `"N/A"` when not determinable or for virtual sessions.
+</ResponseField>
+
+<ResponseField name="isVirtual" type="boolean">
+  `true` when the session has no physical classroom. Virtual sessions are excluded from ICS generation and Google Calendar sync.
+</ResponseField>
+
+<ResponseField name="color" type="string">
+  A hex colour string (e.g. `"#22C55E"`) assigned per-subject by the parser. Can be overridden by the user via the `CUSTOMIZE_COLOR` feature.
+</ResponseField>
+
+<ResponseField name="conflict" type="boolean">
+  `true` when this session's time slot overlaps with another session on the same day. Set by `resolveConflicts()`. Never causes a session to be removed.
+</ResponseField>
+
+---
+
+### `Schedule`
+
+The top-level schedule object stored in state, passed to rendering components, and persisted to the database.
+
+```typescript
+export interface Schedule {
+  id?: string;
+  title: string;
+  academic_period?: string;
+  faculty?: string;
+  sessions: ClassSession[];
+  lastUpdated: Date | string;
+}
+```
+
+<ResponseField name="id" type="string">
+  The UUID of the Supabase `schedules` row. Absent for schedules that have not yet been saved to the database. Its presence controls whether `saveScheduleToDB` performs an `UPDATE` or `INSERT`.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  A display name for the schedule set by the user (e.g. `"Horario 2025-A"`).
+</ResponseField>
+
+<ResponseField name="academic_period" type="string">
+  Normalised period string (e.g. `"ABRIL 2025 - AGOSTO 2025"`). Used in the ICS filename and schedule header display.
+</ResponseField>
+
+<ResponseField name="faculty" type="string">
+  The student's faculty, extracted from the SGU header (e.g. `"FACULTAD DE CIENCIAS INFORMÁTICAS"`).
+</ResponseField>
+
+<ResponseField name="sessions" type="ClassSession[]" required>
+  The complete array of parsed class sessions, including both schedulable and virtual/unscheduled entries.
+</ResponseField>
+
+<ResponseField name="lastUpdated" type="Date | string" required>
+  ISO 8601 timestamp or `Date` object of the last save. Written as `new Date().toISOString()` by `saveScheduleToDB`.
+</ResponseField>
+
+---
+
+## From `types/database.ts`
+
+### `UserProfile`
+
+Represents a row from the Supabase `profiles` table. Populated by a database trigger on `auth.users` insert.
+
+```typescript
+export interface UserProfile {
+  id: string;
+  email: string;
+  full_name?: string;
+  avatar_url?: string;
+  career?: string;
+}
+```
+
+<ResponseField name="id" type="string" required>
+  UUID — matches `auth.users.id` (foreign key).
+</ResponseField>
+
+<ResponseField name="email" type="string" required>
+  The user's email address as registered in Supabase Auth.
+</ResponseField>
+
+<ResponseField name="full_name" type="string">
+  Display name. Populated from `options.data.full_name` during `signUpWithEmail()`, or from the Google OAuth profile.
+</ResponseField>
+
+<ResponseField name="avatar_url" type="string">
+  URL to the user's profile picture. Set automatically for Google OAuth users; `undefined` for email/password accounts.
+</ResponseField>
+
+<ResponseField name="career" type="string">
+  The academic programme (carrera) of the student. Optional — may be filled by the user in their profile settings.
+</ResponseField>
+
+---
+
+### `DBResponseSchedule`
+
+Shape of a row returned from the Supabase `schedules` table. Used as the return type of `getUserSchedules()` and `getScheduleById()`.
+
+```typescript
+export interface DBResponseSchedule {
+  id: string;
+  user_id: string;
+  title: string;
+  academic_period?: string;
+  faculty?: string;
+  schedule_data: ClassSession[];
+  created_at: string;
+}
+```
+
+<ResponseField name="id" type="string" required>
+  UUID primary key of the schedule row.
+</ResponseField>
+
+<ResponseField name="user_id" type="string" required>
+  UUID of the owning user — foreign key to `auth.users.id`.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Schedule display name.
+</ResponseField>
+
+<ResponseField name="academic_period" type="string">
+  Normalised academic period string (e.g. `"ABRIL 2025 - AGOSTO 2025"`).
+</ResponseField>
+
+<ResponseField name="faculty" type="string">
+  Faculty name stored with the schedule.
+</ResponseField>
+
+<ResponseField name="schedule_data" type="ClassSession[]" required>
+  The full session array, stored as JSON in the database. Deserialised automatically by the Supabase client. Note: `getUserSchedules()` does **not** select this column for performance; only `getScheduleById()` returns it.
+</ResponseField>
+
+<ResponseField name="created_at" type="string" required>
+  ISO 8601 timestamp set by the database on row creation.
+</ResponseField>
+
+<Note>
+  The `schedules` table also has a `last_updated` column that is not reflected in `DBResponseSchedule` — it is written by `saveScheduleToDB` but selected only in the `getUserSchedules` lightweight query (as `last_updated`, not mapped into this interface). Keep this in mind if you extend the type for list views.
+</Note>
+
+---
+
+## From `services/google/googleCalendarEdge.ts`
+
+### `CalendarEventInput`
+
+The shape of a single calendar event sent to the `google-calendar-sync` Edge Function. Mirrors the Google Calendar API v3 event structure.
+
+```typescript
+export interface CalendarEventInput {
+  summary: string;
+  description?: string;
+  location?: string;
+  start: {
+    dateTime: string;
+    timeZone: string;
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  recurrence?: string[];
+}
+```
+
+<ResponseField name="summary" type="string" required>
+  The event title — set to `session.subject`.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Free-text body. Set to `"Docente: {teacher}"` by `buildCalendarEventsFromSchedule()`.
+</ResponseField>
+
+<ResponseField name="location" type="string">
+  Human-readable classroom string from `session.location`.
+</ResponseField>
+
+<ResponseField name="start.dateTime" type="string" required>
+  ISO 8601 datetime string of the first occurrence (e.g. `"2025-04-14T08:00:00.000Z"`).
+</ResponseField>
+
+<ResponseField name="start.timeZone" type="string" required>
+  IANA timezone identifier resolved via `Intl.DateTimeFormat().resolvedOptions().timeZone` (defaults to the user's browser timezone).
+</ResponseField>
+
+<ResponseField name="end.dateTime" type="string" required>
+  ISO 8601 datetime string of the first occurrence's end time.
+</ResponseField>
+
+<ResponseField name="end.timeZone" type="string" required>
+  Same IANA timezone as `start.timeZone`.
+</ResponseField>
+
+<ResponseField name="recurrence" type="string[]">
+  Array of RFC 5545 recurrence rule strings. Set to `["RRULE:FREQ=WEEKLY;UNTIL={untilStr}"]` by `buildCalendarEventsFromSchedule()`. Absent for one-off events.
+</ResponseField>
+
+---
+
+### `SyncCalendarResponse`
+
+The response shape returned by `syncCalendarEvents()` after calling the `google-calendar-sync` Edge Function. This type is internal to `googleCalendarEdge.ts` and not re-exported.
+
+```typescript
+interface SyncCalendarResponse {
+  success: boolean;
+  message: string;
+  events?: Array<{ id: string; htmlLink?: string }>;
+}
+```
+
+<ResponseField name="success" type="boolean" required>
+  `true` when the Edge Function created all events successfully; `false` on any failure (including Supabase misconfiguration and empty event arrays).
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable status or error message. Shown directly to the user in the UI on failure.
+</ResponseField>
+
+<ResponseField name="events" type="Array<{ id: string; htmlLink?: string }>">
+  Array of created Google Calendar event objects. Each entry contains the Google-assigned event `id` and an optional `htmlLink` deep-link URL. Present only on success.
+</ResponseField>

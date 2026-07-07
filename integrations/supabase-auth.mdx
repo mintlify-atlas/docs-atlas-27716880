@@ -1,0 +1,274 @@
+---
+title: "Authentication with Supabase in Inforario"
+sidebarTitle: "Authentication"
+description: "Inforario supports email/password and Google OAuth via Supabase Auth. Guest users get a device ID for local-only access; logged-in users sync to the cloud."
+---
+
+Inforario supports two distinct user modes: a fully anonymous **guest mode** that requires no account and stores everything locally, and an **authenticated mode** powered by Supabase Auth that enables cloud sync, profile management, and Google Calendar integration. Both modes share the same UI — the app detects which mode is active by validating whether the current `deviceId` is a proper UUID, and gates all database calls accordingly.
+
+---
+
+## User Modes
+
+<CardGroup cols={2}>
+  <Card title="Guest Mode" icon="user-slash">
+    No account required. A `deviceId` is generated as `dev-{random string}` and persisted in `localStorage` under the key `inforario_device_id`. Schedules are parsed and displayed locally but **never written to Supabase** — all DB calls are gated behind a UUID validation check that rejects the `dev-` prefix.
+  </Card>
+  <Card title="Authenticated Mode" icon="user-check">
+    After sign-in, `deviceId` becomes the user's UUID from the Supabase session. Schedules, the user profile, and Google Calendar tokens are all persisted in the database and available across devices.
+  </Card>
+</CardGroup>
+
+### UUID Gate
+
+Every database operation in `supabaseClient.ts` runs the user ID through a UUID regex before touching Supabase:
+
+```typescript
+const isUUID = (id: string): boolean => {
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(id);
+};
+
+// Example — saveScheduleToDB
+if (!isSupabaseConfigured() || !isUUID(userId)) return null;
+```
+
+A guest user's `dev-{random string}` ID will never match, so no accidental writes or `400` errors reach the database.
+
+---
+
+## `isSupabaseConfigured`
+
+Before any Supabase operation, the app checks whether valid credentials are present:
+
+```typescript
+import { isSupabaseConfigured } from '@/services/supabase/supabaseClient';
+
+if (!isSupabaseConfigured()) {
+  // Fall back to local/demo mode
+}
+```
+
+The function returns `false` if either of the following is true:
+
+- `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY` is missing from the environment
+- The URL contains the placeholder string `"placeholder"` (i.e., the default unconfigured value)
+
+```typescript
+const isConfigured = !!(
+  activeUrl &&
+  activeKey &&
+  !activeUrl.includes("placeholder")
+);
+
+export const isSupabaseConfigured = (): boolean => isConfigured && !!client;
+```
+
+---
+
+## Dummy Client
+
+When Supabase is not configured, the module exports a dummy client object instead of crashing. Every method on the dummy client returns a resolved promise with a descriptive error payload, allowing the entire app to operate in offline-first mode without `TypeError` exceptions:
+
+```typescript
+export const supabase = client || {
+  from: () => createDummyBuilder(),   // full query-builder chain, returns { data: null, error }
+  functions: {
+    invoke: () => Promise.resolve({ data: null, error: { message: "Database not configured" } })
+  },
+  auth: {
+    getSession:          () => Promise.resolve({ data: { session: null }, error: null }),
+    getUser:             () => Promise.resolve({ data: { user: null }, error: null }),
+    onAuthStateChange:   () => ({ data: { subscription: { unsubscribe: () => {} } }, error: null }),
+    signInWithPassword:  () => Promise.resolve({ error: { message: "Database not configured" } }),
+    signUp:              () => Promise.resolve({ error: { message: "Database not configured" } }),
+    resetPasswordForEmail: () => Promise.resolve({ error: { message: "Database not configured" } }),
+    signInWithOAuth:     () => Promise.resolve({ error: { message: "Database not configured" } }),
+    signOut:             () => Promise.resolve({ error: null })
+  }
+};
+```
+
+The `createDummyBuilder` function additionally returns a chainable builder that supports every Supabase query modifier (`.select`, `.eq`, `.order`, `.single`, etc.) so that multi-step query chains do not throw.
+
+---
+
+## Authentication Methods
+
+<Tabs>
+  <Tab title="Email / Password">
+    ### Sign In
+
+    ```typescript
+    import { signInWithEmail } from '@/services/supabase/supabaseClient';
+
+    await signInWithEmail(email, password);
+    // Internally: supabase.auth.signInWithPassword({ email, password })
+    ```
+
+    ### Sign Up
+
+    ```typescript
+    import { signUpWithEmail } from '@/services/supabase/supabaseClient';
+
+    await signUpWithEmail(email, password, fullName);
+    // Internally: supabase.auth.signUp({
+    //   email, password,
+    //   options: { emailRedirectTo: window.location.origin, data: { full_name: fullName } }
+    // })
+    ```
+
+    After sign-up, Supabase sends a confirmation email. The user must click the link before the session becomes active.
+
+    ### Reset Password
+
+    ```typescript
+    import { resetPasswordForEmail } from '@/services/supabase/supabaseClient';
+
+    await resetPasswordForEmail(email);
+    // Internally: supabase.auth.resetPasswordForEmail(email, {
+    //   redirectTo: window.location.origin
+    // })
+    ```
+  </Tab>
+  <Tab title="Google OAuth">
+    ### Sign In with Google
+
+    ```typescript
+    import { signInWithGoogle } from '@/services/supabase/supabaseClient';
+
+    await signInWithGoogle();
+    // Internally: supabase.auth.signInWithOAuth({
+    //   provider: 'google',
+    //   options: { redirectTo: window.location.origin }
+    // })
+    ```
+
+    The user is redirected to Google's consent screen and returned to `window.location.origin` after authorization. Supabase handles the token exchange and creates a session automatically.
+
+    <Warning>
+      Google OAuth redirect requires the domain to be whitelisted in your Supabase project's **Auth → URL Configuration → Redirect URLs** settings. For local development, add `http://localhost:5173` (or your Vite port). For production, add your deployed domain.
+    </Warning>
+  </Tab>
+</Tabs>
+
+---
+
+## Sign-Up Flow
+
+<Steps>
+  <Step title="Open the Auth Modal">
+    The user clicks **Iniciar Sesión / Registrarse** in the Inforario header. The `AuthModal` component opens with the **Login** tab active by default.
+  </Step>
+  <Step title="Switch to Register tab">
+    The user clicks the **Registrarse** tab. A full name field appears in addition to email and password.
+  </Step>
+  <Step title="Enter credentials and validate password">
+    As the user types their password, a live strength indicator validates four requirements in real time: 8+ characters, at least one uppercase letter, at least one lowercase letter, and at least one number. The **Crear cuenta** button is disabled until all four pass.
+  </Step>
+  <Step title="Submit the form">
+    On submit, `signUpWithEmail(email, password, fullName)` is called. Supabase creates the account and sends a confirmation email with a link to `window.location.origin`.
+  </Step>
+  <Step title="Confirm email">
+    The user clicks the confirmation link in their inbox. The Supabase session becomes active and the app's `onAuthStateChange` listener updates the UI to authenticated mode.
+  </Step>
+</Steps>
+
+---
+
+## Session Management
+
+The app uses two Supabase Auth hooks at startup to hydrate and maintain the user session:
+
+```typescript
+// On mount — restore an existing session
+const { data: { session } } = await supabase.auth.getSession();
+
+// Subscription — react to sign-in, sign-out, token refresh
+const { data: { subscription } } = supabase.auth.onAuthStateChange(
+  (event, session) => {
+    // Update app-level auth state
+  }
+);
+
+// Cleanup
+return () => subscription.unsubscribe();
+```
+
+`onAuthStateChange` fires for every auth event: `SIGNED_IN`, `SIGNED_OUT`, `TOKEN_REFRESHED`, `PASSWORD_RECOVERY`, and `USER_UPDATED`. Inforario uses this callback to update the `deviceId` and trigger a re-fetch of the user's cloud schedules.
+
+---
+
+## `getUserProfile`
+
+Reads the authenticated user's profile row from the `profiles` table.
+
+```typescript
+import { getUserProfile } from '@/services/supabase/supabaseClient';
+
+const profile = await getUserProfile(userId);
+// Returns UserProfile | null
+```
+
+<ParamField path="userId" type="string" required>
+  The user's UUID from the Supabase session. The function returns `null` immediately if the ID is not a valid UUID (i.e., for guest users).
+</ParamField>
+
+Returns a `UserProfile` object:
+
+```typescript
+export interface UserProfile {
+  id: string;
+  email: string;
+  full_name?: string;
+  avatar_url?: string;
+  career?: string;
+}
+```
+
+---
+
+## Database Tables
+
+<CardGroup cols={3}>
+  <Card title="profiles" icon="user">
+    One row per authenticated user. Contains `id` (UUID matching the Supabase Auth user), `email`, `full_name`, `avatar_url`, and `career`. Read by `getUserProfile`.
+  </Card>
+  <Card title="schedules" icon="table">
+    Stores parsed timetables. Each row has a `user_id` foreign key (UUID) and a `schedule_data` JSONB column holding the `ClassSession[]` array. Guest users never write here.
+  </Card>
+  <Card title="user_calendar_tokens" icon="key">
+    Stores Google OAuth2 tokens per user. Requires a valid authenticated session — the Google Calendar sync Edge Function rejects requests without a row in this table.
+  </Card>
+</CardGroup>
+
+---
+
+## Environment Variables
+
+```bash
+# .env.local
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+Both variables are read at module initialization time. If either is absent or the URL contains `"placeholder"`, the app switches to dummy-client mode and all users are treated as guests with local-only access.
+
+<Tip>
+  You can run Inforario entirely without Supabase credentials for development or demonstration purposes. The dummy client prevents any crashes — schedule parsing, display, and ICS export all work without a database connection. Only cloud save, profile, and Google Calendar sync are unavailable.
+</Tip>
+
+---
+
+## Auth Modal Views
+
+The `AuthModal` component (`components/modals/AuthModal.tsx`) exposes three views selectable at runtime:
+
+| View              | Trigger                                | Action                          |
+|-------------------|----------------------------------------|---------------------------------|
+| `LOGIN`           | Default on open                        | `signInWithEmail`               |
+| `REGISTER`        | Click **Registrarse** tab              | `signUpWithEmail` + validation  |
+| `FORGOT_PASSWORD` | Click **¿Olvidaste tu contraseña?**    | `resetPasswordForEmail`         |
+
+All three views share the same form `onSubmit` handler, which checks `isSupabaseConfigured()` first. If Supabase is not configured, the modal simulates a successful login after a 1-second delay — useful for previewing the app without credentials.

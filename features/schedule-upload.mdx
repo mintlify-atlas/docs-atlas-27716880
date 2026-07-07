@@ -1,0 +1,212 @@
+---
+title: "Uploading and Parsing SGU Schedule PDFs"
+sidebarTitle: "Schedule Upload"
+description: "Learn how Inforario extracts class sessions from UTM SGU PDF exports using positional text analysis and a Groq AI fallback for complex layouts."
+---
+
+Inforario accepts your official UTM SGU schedule PDF and transforms it into a structured, interactive timetable without any manual data entry. Drop the file onto the upload zone, and Inforario will automatically detect subjects, teachers, time slots, and room codes — then resolve any overlapping sessions before handing the data to the viewer.
+
+## The DropZone Component
+
+The `DropZone` component is the entry point for all uploads. It accepts drag-and-drop events as well as a standard file picker, validates the file type, and delegates to the `useScheduleUpload` hook for processing.
+
+<Steps>
+  <Step title="Select or drag your PDF">
+    Click **Seleccionar Archivo** or drag your SGU schedule PDF directly onto the upload zone. The component listens for `dragenter`, `dragover`, `dragleave`, and `drop` events and provides visual feedback while a file is being dragged over it.
+  </Step>
+  <Step title="File validation">
+    Only `application/pdf` files are accepted. If you drop an unsupported file type, an inline error banner appears with an `×` dismiss button. Image files are processed through the OCR fallback path in the underlying hook but are not shown in the main drop zone UI.
+  </Step>
+  <Step title="Confirm and process">
+    Once a valid file is selected, its name and size are displayed. Click **Procesar Horario** to start parsing. The button shows a spinning loader and the text **Analizando Documento…** while the file is being processed.
+  </Step>
+  <Step title="Success handoff">
+    On success, `useScheduleUpload` calls the `onSuccess(schedule)` callback, which transitions the app from `AppView.LANDING` to `AppView.DASHBOARD` with the parsed `Schedule` object.
+  </Step>
+</Steps>
+
+## Parsing Pipeline
+
+`useScheduleUpload` orchestrates a two-path pipeline for PDFs and a separate OCR path for images. For PDFs, it first attempts AI-assisted extraction; on failure it falls back to the local regex parser.
+
+<Tabs>
+  <Tab title="AI Extraction (Primary)">
+    The AI path calls `parseScheduleFileWithEdge` from `supabaseClient.ts`. This function first extracts plain text from the PDF using **pdfjs-dist**, groups text items by row (y-coordinate proximity ≤ 2 px), then sends the reconstructed plain text to the **`extract-schedule` Supabase Edge Function**, which calls Groq's `llama-3.3-70b-versatile` model to return a structured session list.
+
+    ```typescript
+    // supabaseClient.ts — AI extraction path
+    export const parseScheduleFileWithEdge = async (base64Data: string) => {
+      if (!isSupabaseConfigured()) {
+        throw new Error('Supabase no está configurado para usar extracción por IA.');
+      }
+
+      const pdfText = await extractPdfText(base64Data); // pdfjs-dist → plain text
+
+      const { data, error } = await supabase.functions.invoke('extract-schedule', {
+        body: { pdfText },
+      });
+
+      if (error) throw new Error(error.message || 'No se pudo invocar extract-schedule.');
+
+      const sessions = mapSessions(data);   // validate & normalize AI response
+      if (!sessions.length) throw new Error('La IA no devolvió sesiones válidas.');
+
+      return { sessions };
+    };
+    ```
+
+    The `mapSessions` helper validates each session returned by the AI: it checks that `startTime` and `endTime` match `HH:MM` format, maps Spanish day names to `DayOfWeek`, strips `TECNOLOGÍAS DE LA` prefixes and itinerary suffixes from subject names, and drops any entry missing required fields.
+
+    <Note>
+      If Supabase is not configured (missing `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`), the AI path is skipped entirely and the local parser is used directly.
+    </Note>
+  </Tab>
+  <Tab title="Local Regex Parser (Fallback)">
+    When the Edge Function is unavailable or throws, `useScheduleUpload` falls back to `parseScheduleFile` from `sguRegexParser.ts`. This parser uses **pdfjs-dist** to extract every text item with its exact x/y canvas coordinates, then uses fixed column boundaries to classify each item.
+
+    ```typescript
+    // sguRegexParser.ts — column boundary constants
+    const COL = {
+      SUBJECT_MAX_X:  170,   // items with x < 170 → subject name column
+      DOCENTE_MIN_X:  260,   // items with 260 ≤ x < 415 → teacher column
+      DOCENTE_MAX_X:  415,
+      HORARIO_MIN_X:  495,   // items with x ≥ 495 → schedule / room column
+    };
+    ```
+
+    Items in the schedule column whose text matches the pattern `LUNES|MARTES|MIÉRCOLES|JUEVES|VIERNES (HH:MM:SS-HH:MM:SS)` are treated as **entry headers**. All other schedule-column items below a header are associated with that header to extract room codes and locations.
+
+    Each subject block is associated with the nearest entry header by vertical distance, producing a complete `ClassSession` entry.
+  </Tab>
+  <Tab title="OCR Fallback (Images)">
+    If an `image/*` MIME type is passed to `parseScheduleFile`, the parser imports **Tesseract.js** dynamically and runs Spanish OCR on the image data URL. Progress is logged to the console during recognition.
+
+    ```typescript
+    // sguRegexParser.ts — OCR via Tesseract.js
+    async function parseImage(base64Data: string, mimeType: string): Promise<ParseResult> {
+      const Tesseract = await import('tesseract.js');
+      const imageDataUrl = `data:${mimeType};base64,${base64Data}`;
+
+      const result = await Tesseract.recognize(imageDataUrl, 'spa', {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+          }
+        }
+      });
+
+      return parseRawText(result.data.text); // re-uses line-based parser
+    }
+    ```
+
+    <Warning>
+      OCR accuracy depends heavily on scan quality. Blurry or low-contrast images may produce incomplete or incorrect schedules. Always prefer a PDF export from the SGU portal when available.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Metadata Extraction
+
+The local parser scans text items in the **top portion of page 1** (`y < 210`) to find the schedule header fields. Each label is matched by text content and its value is read from the next item on the same horizontal line (`|candidate.y − label.y| ≤ 5`).
+
+<CardGroup cols={2}>
+  <Card title="PERIODO" icon="calendar">
+    Academic period range — normalized from `"ABRIL DE 2026 HASTA AGOSTO DE 2026"` to `"ABRIL 2026 - AGOSTO 2026"`.
+  </Card>
+  <Card title="FACULTAD" icon="building-columns">
+    Faculty name, stored in uppercase and carried into every `ClassSession` as `subject_faculty`.
+  </Card>
+  <Card title="ESCUELA" icon="graduation-cap">
+    Career / school name, mapped to the `career` field in `ParseResult`.
+  </Card>
+  <Card title="ESTUDIANTE" icon="user">
+    Student full name, exposed as `student_name` in `ParseResult`.
+  </Card>
+</CardGroup>
+
+The `NIVEL` field is also extracted but used internally for filtering only.
+
+## Normalization Logic
+
+### Subject Names
+
+Raw subject names from the PDF often contain UTM-specific suffixes and prefixes that are stripped during parsing:
+
+```typescript
+sub.name = sub.items
+  .sort((a, b) => a.y - b.y)
+  .map(i => i.text)
+  .join(' ')
+  .replace(/\s*\([A-Z0-9\s-]+\)\s*/gi, '')        // removes mesh codes like (A19)
+  .replace(/^(TECNOLOGÍAS DE LA\s*)+/i, '')        // strips repeated prefix
+  .replace(/\s+/g, ' ')
+  .trim();
+```
+
+### Teacher Names
+
+UTM stores teacher names in the format `LASTNAME1 LASTNAME2 FIRSTNAME1 FIRSTNAME2`. The parser rearranges them to `Firstname Lastname` and strips academic title prefixes:
+
+```typescript
+// Titles stripped: Ing., Lic., Dr., Dra., MSc., Mgtr., PhD, Abg., Arq., Econ., Prof.
+const TITLE_PREFIXES = /\b(ing|lic|dr|dra|msc|mgtr|phd|abg|arq|econ|prof|sr|sra|srta)\.?\s*/gi;
+
+// UTM 4-part name → "Firstname Lastname"
+if (parts.length >= 3) {
+  const firstName = capitalize(parts[2]); // NOMBRE1
+  const lastName  = capitalize(parts[0]); // APELLIDO1
+  return `${firstName} ${lastName}`;
+}
+```
+
+Names starting with `TEMP ` or containing `TEMPORAL` are normalized to `"Sin asignar"`.
+
+### Room / Location Codes
+
+UTM room codes follow the pattern `CAMPUS-FACULTY-FLOOR-ROOM-TYPE`. The parser decodes them into human-readable strings:
+
+<CardGroup cols={2}>
+  <Card title="1-59-2-04-A" icon="door-open">
+    → **Aula 204 - Piso 2** (type code `A` = classroom)
+  </Card>
+  <Card title="1-59-3-06-LC" icon="computer">
+    → **Lab. Computación 306 - Piso 3** (type code `LC` = computer lab)
+  </Card>
+</CardGroup>
+
+If the code does not match the UTM pattern, the raw `TIPO` and `LUGAR` fields from the schedule block are used instead.
+
+## ParseResult Shape
+
+The parsing functions return a `ParseResult` object consumed by `useScheduleUpload` to build the final `Schedule`.
+
+<ResponseField name="sessions" type="ClassSession[]" required>
+  Array of parsed class sessions. Each entry includes `id`, `subject`, `day`, `startTime`, `endTime`, `teacher`, `location`, `floor`, `isVirtual`, `conflict`, and `color`.
+</ResponseField>
+
+<ResponseField name="faculty" type="string">
+  Faculty name extracted from the PDF header (e.g. `"FACULTAD DE CIENCIAS INFORMÁTICAS"`).
+</ResponseField>
+
+<ResponseField name="academic_period" type="string">
+  Normalized academic period string (e.g. `"SEPTIEMBRE 2025 - ENERO 2026"`).
+</ResponseField>
+
+<ResponseField name="student_name" type="string">
+  Student full name from the `ESTUDIANTE:` header field.
+</ResponseField>
+
+<ResponseField name="career" type="string">
+  Career / school name from the `ESCUELA:` header field.
+</ResponseField>
+
+## Accepted File Types
+
+| MIME Type | Processing Path |
+|-----------|----------------|
+| `application/pdf` | AI extraction → local regex parser fallback |
+| `image/png`, `image/jpeg`, `image/webp`, `image/*` | OCR via Tesseract.js |
+
+<Note>
+  The DropZone UI currently restricts the file picker to `application/pdf` only. Image upload is available programmatically via the `useScheduleUpload` hook for future UI expansion.
+</Note>

@@ -1,0 +1,238 @@
+---
+title: "Setting Up Supabase for Inforario"
+sidebarTitle: "Supabase Setup"
+description: "Create the Supabase project, configure authentication providers, create the required database tables, and deploy the Edge Functions for Inforario."
+---
+
+Inforario relies on Supabase for user authentication, cloud schedule persistence, and serverless AI extraction. This guide walks through every step needed to bring a fresh Supabase project to the point where all features — including AI-powered PDF parsing and Google Calendar sync — work end-to-end.
+
+<Steps>
+
+### Create a Supabase Project
+
+Go to [supabase.com](https://supabase.com) and create a new project. Choose a region close to your users and set a strong database password (you won't need it regularly, but keep it safe).
+
+Once the project is provisioned, navigate to **Settings → API** and copy two values:
+
+- **Project URL** — looks like `https://abcdefgh.supabase.co`
+- **`anon` public key** — the `eyJ...` JWT token under *Project API keys*
+
+Add these to your `frontend/.env.local`:
+
+```bash
+VITE_SUPABASE_URL=https://abcdefgh.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+### Create the Database Tables
+
+Open the **SQL Editor** in the Supabase dashboard and run the following statements to create the three tables Inforario requires.
+
+**`profiles` table** — stores additional user metadata synced from `auth.users`:
+
+```sql
+create table public.profiles (
+  id         uuid references auth.users on delete cascade primary key,
+  email      text,
+  full_name  text,
+  avatar_url text,
+  career     text,
+  updated_at timestamptz default now()
+);
+```
+
+**`schedules` table** — the core data store; each row holds a full parsed schedule as JSONB:
+
+```sql
+create table public.schedules (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid references auth.users on delete cascade not null,
+  title           text,
+  academic_period text,
+  faculty         text,
+  schedule_data   jsonb,
+  last_updated    timestamptz default now()
+);
+
+create index schedules_user_id_idx on public.schedules (user_id);
+```
+
+**`user_calendar_tokens` table** — stores OAuth tokens for Google Calendar sync:
+
+```sql
+create table public.user_calendar_tokens (
+  user_id       uuid primary key references auth.users on delete cascade,
+  access_token  text not null,
+  refresh_token text,
+  expiry_date   timestamptz
+);
+```
+
+### Enable Row Level Security
+
+After creating the tables, turn on Row Level Security (RLS) so that each user can only read and write their own rows. Run the following SQL in the editor:
+
+```sql
+-- Enable RLS on both tables
+alter table public.schedules enable row level security;
+alter table public.user_calendar_tokens enable row level security;
+
+-- Schedules: users can manage only their own rows
+create policy "Users can view their own schedules"
+  on public.schedules for select
+  using ( auth.uid() = user_id );
+
+create policy "Users can insert their own schedules"
+  on public.schedules for insert
+  with check ( auth.uid() = user_id );
+
+create policy "Users can update their own schedules"
+  on public.schedules for update
+  using ( auth.uid() = user_id );
+
+create policy "Users can delete their own schedules"
+  on public.schedules for delete
+  using ( auth.uid() = user_id );
+
+-- Calendar tokens: users can manage only their own token row
+create policy "Users can view their own calendar tokens"
+  on public.user_calendar_tokens for select
+  using ( auth.uid() = user_id );
+
+create policy "Users can upsert their own calendar tokens"
+  on public.user_calendar_tokens for insert
+  with check ( auth.uid() = user_id );
+
+create policy "Users can update their own calendar tokens"
+  on public.user_calendar_tokens for update
+  using ( auth.uid() = user_id );
+```
+
+<Note>
+  The `profiles` table does not require RLS for basic operation since profile data is populated server-side via a database trigger on `auth.users`. If you store sensitive fields there, add equivalent policies following the same pattern.
+</Note>
+
+### Configure Authentication Providers
+
+In the Supabase dashboard, go to **Authentication → Providers**.
+
+**Email / Password**
+Enable the **Email** provider. For development, you may disable *Confirm email* (under **Auth → Settings → Email confirmations**) to simplify testing, but re-enable it for production. The local `config.toml` has `enable_confirmations = false` by default for this reason.
+
+**Google OAuth**
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create (or select) a project and navigate to **APIs & Services → Credentials**.
+2. Create an **OAuth 2.0 Client ID** of type *Web application*.
+3. Under *Authorized redirect URIs*, add:
+   - `https://<your-project-ref>.supabase.co/auth/v1/callback`
+   - `http://localhost:3000` (for local development — the Vite dev server runs on port 3000)
+4. Copy the **Client ID** and **Client Secret** back into Supabase dashboard → **Authentication → Providers → Google** and save.
+5. In `supabaseClient.ts`, `signInWithGoogle()` sets `redirectTo: window.location.origin`, so no additional redirect URL configuration is needed on the frontend.
+
+### Set Edge Function Secrets
+
+From inside the `backend/` directory (where `supabase/config.toml` lives), push your secrets to the Supabase project:
+
+```bash
+cd backend
+
+supabase secrets set GROQ_API_KEY=your_groq_api_key_here
+supabase secrets set GROQ_MODEL=llama-3.3-70b-versatile
+supabase secrets set GOOGLE_CLIENT_ID=your_oauth_client_id
+supabase secrets set GOOGLE_CLIENT_SECRET=your_oauth_client_secret
+```
+
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` are injected automatically by the Edge Functions runtime — you do not need to set them manually.
+
+<Tip>
+  You can verify which secrets are currently set by running `supabase secrets list` from the `backend/` directory.
+</Tip>
+
+### Deploy Edge Functions
+
+With secrets in place, deploy both Edge Functions:
+
+```bash
+cd backend
+
+supabase functions deploy extract-schedule
+supabase functions deploy google-calendar-sync
+```
+
+The `extract-schedule` function is configured with `verify_jwt = false` in `config.toml`, meaning it accepts unauthenticated requests. The `google-calendar-sync` function requires a valid Supabase JWT passed in the `Authorization` header — it calls `supabase.auth.getUser()` to verify the caller before touching any token rows.
+
+</Steps>
+
+## Understanding `config.toml`
+
+The file at `backend/supabase/config.toml` drives the local Supabase stack configuration. The most important field is:
+
+```toml
+project_id = "inforario-IA-null"
+```
+
+This string uniquely identifies the local project on your machine. It is used as a namespace prefix for Docker container names and local data directories. If you clone the repository on a machine that already has another Supabase project running with the same `project_id`, rename this value to avoid conflicts.
+
+Key sections relevant to Inforario development:
+
+<AccordionGroup>
+
+<Accordion title="API (port 54321)">
+  The local PostgREST API runs on port `54321`. The `schemas` array exposes `public` and `graphql_public`. `max_rows = 1000` limits payload size for safety — adjust if you need to retrieve more than 1,000 schedule rows in a single query.
+
+  ```toml
+  [api]
+  enabled = true
+  port = 54321
+  schemas = ["public", "graphql_public"]
+  max_rows = 1000
+  ```
+</Accordion>
+
+<Accordion title="Database (port 54322)">
+  Local PostgreSQL major version is set to `17`, matching the remote Supabase project. The shadow database for `db diff` runs on port `54320`. Seeds are loaded from `./seed.sql` on `supabase db reset`.
+
+  ```toml
+  [db]
+  port = 54322
+  major_version = 17
+  ```
+</Accordion>
+
+<Accordion title="Auth (site_url)">
+  The `site_url` is set to `http://127.0.0.1:3000`, aligning with the Vite dev server port defined in `vite.config.ts`. Email OTPs expire after 1 hour (`otp_expiry = 3600`). Anonymous sign-ins are disabled (`enable_anonymous_sign_ins = false`).
+
+  ```toml
+  [auth]
+  site_url = "http://127.0.0.1:3000"
+  additional_redirect_urls = ["https://127.0.0.1:3000"]
+  jwt_expiry = 3600
+  enable_anonymous_sign_ins = false
+  ```
+</Accordion>
+
+<Accordion title="Edge Runtime (Deno 2)">
+  Edge Functions run with Deno version 2 and the `per_worker` policy, which enables hot-reload during local development. The Chrome inspector for debugging is available on port `8083`. The `extract-schedule` function overrides JWT verification at the function level.
+
+  ```toml
+  [edge_runtime]
+  policy = "per_worker"
+  inspector_port = 8083
+  deno_version = 2
+
+  [functions.extract-schedule]
+  verify_jwt = false
+  ```
+</Accordion>
+
+<Accordion title="Inbucket (email testing)">
+  Emails sent during local auth flows (confirmations, password resets) are captured by Inbucket and viewable at `http://localhost:54324` — no real emails are sent.
+
+  ```toml
+  [inbucket]
+  enabled = true
+  port = 54324
+  ```
+</Accordion>
+
+</AccordionGroup>

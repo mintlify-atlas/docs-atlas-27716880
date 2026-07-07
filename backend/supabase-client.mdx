@@ -1,0 +1,320 @@
+---
+title: "Supabase Client Service Reference"
+sidebarTitle: "Supabase Client"
+description: "Reference for all database operations, authentication helpers, and the AI Edge Function caller exported from supabaseClient.ts."
+---
+
+The `supabaseClient.ts` service is the single entry point for all communication between Inforario's frontend and the Supabase backend. It handles safe client initialization with a graceful dummy-object fallback, exposes typed wrappers around the `schedules` and `profiles` tables, provides authentication helpers, and calls the `extract-schedule` Edge Function for AI-powered PDF parsing.
+
+---
+
+## Initialization exports
+
+### `supabase`
+
+The shared Supabase client instance, created once at module load. Configuration is resolved in priority order:
+
+1. `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` environment variables (`.env.local`)
+2. Hardcoded constants from `src/constants.ts` (development fallback)
+
+If neither source provides valid, non-placeholder values, `supabase` is assigned a **dummy object** that mirrors the full Supabase client API (including `from()`, `auth.*`, and `functions.invoke()`). Every dummy method returns a resolved `Promise` containing `{ data: null, error: { message: "Database not configured" } }` so the app never white-screens on misconfiguration.
+
+```typescript
+import { supabase } from './services/supabase/supabaseClient';
+
+const { data, error } = await supabase.from('schedules').select('*');
+```
+
+<Note>
+  Always check `isSupabaseConfigured()` before performing writes. The dummy object silently swallows operations — data will not be persisted.
+</Note>
+
+---
+
+### `isSupabaseConfigured()`
+
+```typescript
+isSupabaseConfigured(): boolean
+```
+
+Returns `true` only when both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are present, non-empty, and do **not** contain the string `"placeholder"`, **and** the real Supabase client was instantiated without throwing.
+
+```typescript
+import { isSupabaseConfigured } from './services/supabase/supabaseClient';
+
+if (!isSupabaseConfigured()) {
+  console.warn('Running in offline / guest mode.');
+}
+```
+
+---
+
+## Database operations
+
+All database functions silently guard against invalid `userId` values that are not RFC 4122 UUIDs (e.g. guest device IDs) to prevent Supabase from returning HTTP 400 errors.
+
+### `saveScheduleToDB()`
+
+```typescript
+saveScheduleToDB(userId: string, schedule: Schedule): Promise<data | null>
+```
+
+Persists a schedule for the authenticated user. Performs an **UPDATE** if `schedule.id` is present, otherwise performs an **INSERT**. Always writes `last_updated` as the current ISO timestamp.
+
+Returns `null` when:
+- Supabase is not configured
+- `userId` is not a valid UUID
+- The database operation throws any error (logged to console)
+
+<ParamField path="userId" type="string" required>
+  The authenticated user's UUID from Supabase Auth. Non-UUID values (guest device IDs) are silently rejected and `null` is returned.
+</ParamField>
+
+<ParamField path="schedule" type="Schedule" required>
+  The schedule object to persist. If `schedule.id` is set the existing row is updated; otherwise a new row is inserted.
+
+  <Expandable title="Schedule shape">
+    ```typescript
+    interface Schedule {
+      id?: string;           // UUID — triggers UPDATE if present
+      title: string;
+      academic_period?: string;
+      faculty?: string;
+      sessions: ClassSession[];
+      lastUpdated: Date | string;
+    }
+    ```
+  </Expandable>
+</ParamField>
+
+**Columns written to `schedules` table**
+
+| Column | Value |
+|---|---|
+| `user_id` | `userId` (INSERT only) |
+| `title` | `schedule.title` |
+| `academic_period` | `schedule.academic_period` |
+| `schedule_data` | `schedule.sessions` (JSON) |
+| `faculty` | `schedule.faculty` |
+| `last_updated` | `new Date().toISOString()` |
+
+---
+
+### `getUserSchedules()`
+
+```typescript
+getUserSchedules(userId: string): Promise<DBResponseSchedule[]>
+```
+
+Fetches lightweight schedule summaries for a user — excludes the full `schedule_data` blob to keep list views fast.
+
+Returns `[]` when:
+- Supabase is not configured
+- `userId` is falsy or not a valid UUID (guest users)
+- The query errors
+
+<ParamField path="userId" type="string" required>
+  The authenticated user's UUID. Guest/device IDs (non-UUID) skip the network request entirely and return an empty array.
+</ParamField>
+
+**Selected columns**: `id`, `title`, `academic_period`, `last_updated`  
+**Order**: `last_updated` descending (most recently saved first)
+
+```typescript
+const schedules = await getUserSchedules(user.id);
+// [{ id: '...', title: 'Horario 2025', academic_period: 'ABRIL 2025 - AGOSTO 2025', last_updated: '...' }, ...]
+```
+
+---
+
+### `getScheduleById()`
+
+```typescript
+getScheduleById(scheduleId: string): Promise<DBResponseSchedule | null>
+```
+
+Fetches a single schedule row including the full `schedule_data` JSON column (i.e. the complete `ClassSession[]` array). Returns `null` if Supabase is unconfigured, the row is not found, or any error occurs.
+
+<ParamField path="scheduleId" type="string" required>
+  The UUID of the schedule row to retrieve.
+</ParamField>
+
+```typescript
+const row = await getScheduleById('a1b2c3...');
+if (row) {
+  const sessions: ClassSession[] = row.schedule_data;
+}
+```
+
+---
+
+### `deleteSchedule()`
+
+```typescript
+deleteSchedule(scheduleId: string): Promise<void>
+```
+
+Deletes a schedule row by its UUID. Unlike the other database functions, **this function throws** on failure with user-friendly Spanish-language messages to support UI error handling.
+
+<ParamField path="scheduleId" type="string" required>
+  UUID of the schedule to delete.
+</ParamField>
+
+<Warning>
+  `deleteSchedule` re-throws errors in two special cases:
+
+  - **JWT / session expired** → throws `"Credenciales inválidas o sesión expirada. Por favor cierra sesión y vuelve a ingresar."`
+  - **Network / CORS error** (`"Script error."`) → throws `"Error de conexión. Por favor verifica tu internet o intenta más tarde."`
+
+  All other errors are re-thrown as-is after being logged.
+</Warning>
+
+---
+
+### `getUserProfile()`
+
+```typescript
+getUserProfile(userId: string): Promise<UserProfile | null>
+```
+
+Reads a single row from the `profiles` table. Returns `null` if Supabase is unconfigured, `userId` is not a UUID, the row is missing, or any query error occurs (error is swallowed — `null` is returned rather than throwing).
+
+<ParamField path="userId" type="string" required>
+  The authenticated user's UUID.
+</ParamField>
+
+```typescript
+const profile = await getUserProfile(user.id);
+// { id: '...', email: 'a@b.com', full_name: 'Ana García', avatar_url: null, career: 'ISW' }
+```
+
+---
+
+## Authentication helpers
+
+All auth helpers delegate to `supabase.auth` and follow the same pattern: they call the underlying Supabase method, throw if `error` is truthy, and return `data` on success.
+
+### `signInWithGoogle()`
+
+```typescript
+signInWithGoogle(): Promise<data>
+```
+
+Initiates an OAuth flow with Google. The redirect URL is set to `window.location.origin` so the user is returned to the current deployment after consent.
+
+```typescript
+await signInWithGoogle();
+// Browser redirects to Google OAuth — no return value used directly
+```
+
+---
+
+### `signInWithEmail()`
+
+```typescript
+signInWithEmail(email: string, password: string): Promise<data>
+```
+
+Signs in an existing user with email and password via `supabase.auth.signInWithPassword`.
+
+<ParamField path="email" type="string" required>
+  The user's registered email address.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  The user's password.
+</ParamField>
+
+---
+
+### `signUpWithEmail()`
+
+```typescript
+signUpWithEmail(email: string, password: string, fullName: string): Promise<data>
+```
+
+Registers a new user. Passes `full_name` inside the `options.data` metadata object so Supabase can populate the `profiles` table via trigger.
+
+<ParamField path="email" type="string" required>
+  New user's email address.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  Password for the new account.
+</ParamField>
+
+<ParamField path="fullName" type="string" required>
+  Display name stored under `data.full_name` in the Supabase Auth user record.
+</ParamField>
+
+---
+
+### `resetPasswordForEmail()`
+
+```typescript
+resetPasswordForEmail(email: string): Promise<data>
+```
+
+Sends a password-reset email via `supabase.auth.resetPasswordForEmail`. The `redirectTo` is set to `window.location.origin`.
+
+<ParamField path="email" type="string" required>
+  Email address of the account to reset.
+</ParamField>
+
+---
+
+## AI extraction
+
+### `parseScheduleFileWithEdge()`
+
+```typescript
+parseScheduleFileWithEdge(base64Data: string): Promise<{ sessions: ClassSession[] }>
+```
+
+The AI-powered schedule extraction pipeline. Extracts text from a PDF using `pdfjs-dist`, sends the plain-text content to the `extract-schedule` Supabase Edge Function (which calls an LLM), then maps and validates the response into a typed `ClassSession[]`.
+
+<ParamField path="base64Data" type="string" required>
+  A base64-encoded data URL of the PDF file (e.g. `data:application/pdf;base64,JVBERi0x…`). The `data:*;base64,` prefix is stripped internally before decoding.
+</ParamField>
+
+**Processing pipeline**
+
+```text
+base64 PDF
+  └─► pdfjs-dist text extraction (positional rows → lines)
+        └─► supabase.functions.invoke('extract-schedule', { pdfText })
+              └─► mapSessions() — validate & type-cast each session
+                    └─► { sessions: ClassSession[] }
+```
+
+**Session mapping rules applied by `mapSessions()`**
+
+- `isVirtual` is `true` if `item.isVirtual === true` **or** the location contains `"VIRTUAL"` (case-insensitive)
+- `day` is mapped through `DAY_MAP` (`Lunes`→`'Lunes'`, etc.); unknown days become `undefined`
+- `startTime` and `endTime` are validated against `/^([01]\d|2[0-3]):[0-5]\d$/`
+- Subject names have `"TECNOLOGÍAS DE LA"` prefixes and parenthetical codes (e.g. `(A19)`) stripped
+- Sessions with an empty `subject` are dropped
+- Non-virtual sessions with a missing `day` or invalid times are dropped
+- Each valid session receives a fresh `crypto.randomUUID()` as its `id`
+
+**Throws** in the following cases:
+
+| Condition | Error message |
+|---|---|
+| Supabase not configured | `'Supabase no está configurado para usar extracción por IA.'` |
+| PDF text extraction fails | `'No se pudo extraer texto del PDF.'` |
+| Edge Function returns an error | The Edge Function's error message |
+| Response contains no valid sessions | `'La IA no devolvió sesiones válidas.'` |
+
+```typescript
+try {
+  const { sessions } = await parseScheduleFileWithEdge(base64DataUrl);
+  console.log(`Extracted ${sessions.length} sessions`);
+} catch (err) {
+  console.error('AI extraction failed:', err.message);
+}
+```
+
+<Tip>
+  For environments where the Supabase Edge Function is unavailable (e.g. local development without internet access), fall back to the local `parseScheduleFile()` parser from `sguRegexParser.ts`, which performs the same extraction entirely in-browser using regex column analysis.
+</Tip>

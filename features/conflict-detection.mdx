@@ -1,0 +1,186 @@
+---
+title: "Automatic Schedule Conflict Detection"
+sidebarTitle: "Conflict Detection"
+description: "Inforario automatically detects overlapping class sessions on the same day and flags them visually. Conflicts are resolved non-destructively."
+---
+
+When a UTM schedule PDF is parsed, Inforario automatically scans every class session for time overlaps and marks conflicting pairs before the data ever reaches the viewer. This happens in two places: once immediately after parsing (via `resolveConflicts` in `sguRegexParser.ts`) and again reactively inside the dashboard (via the `useConflictResolver` hook) whenever the sessions array changes.
+
+## What Counts as a Conflict
+
+Two `ClassSession` entries are considered conflicting when they share the same day **and** their time intervals overlap. The overlap condition uses the standard interval intersection test:
+
+```
+overlap = (start1 < end2) AND (start2 < end1)
+```
+
+This means sessions that merely touch at an endpoint (e.g. one ends at 10:00 and the next starts at 10:00) are **not** flagged as conflicts.
+
+Virtual sessions (`isVirtual: true`) and sessions missing a `day`, `startTime`, or `endTime` are excluded from the check entirely — they are collected in a separate bucket and returned with `conflict: false`.
+
+## resolveConflicts (Post-Parse Utility)
+
+`resolveConflicts` is called in `sguRegexParser.ts` immediately after all sessions have been extracted from the PDF, before the `ParseResult` is returned to `useScheduleUpload`.
+
+```typescript
+// sguRegexParser.ts
+export function resolveConflicts(sessions: ClassSession[]): ClassSession[] {
+  if (sessions.length <= 1) return sessions;
+
+  const schedulable = sessions.filter((s) => s.day && s.startTime && s.endTime);
+  const unscheduled = sessions.filter((s) => !s.day || !s.startTime || !s.endTime);
+
+  // Reset all conflict flags before re-evaluating
+  for (const s of sessions) {
+    s.conflict = false;
+  }
+
+  // Sort for predictable evaluation order
+  schedulable.sort((a, b) => {
+    if (a.day !== b.day) return (a.day || '').localeCompare(b.day || '');
+    return (a.startTime || '').localeCompare(b.startTime || '');
+  });
+
+  for (let i = 0; i < schedulable.length; i++) {
+    for (let j = i + 1; j < schedulable.length; j++) {
+      const s1 = schedulable[i];
+      const s2 = schedulable[j];
+
+      if (s1.day === s2.day) {
+        const timeToMins = (time: string) => {
+          const [h, m] = time.split(':').map(Number);
+          return h * 60 + m;
+        };
+
+        const start1 = timeToMins(s1.startTime || '00:00');
+        const end1   = timeToMins(s1.endTime   || '00:00');
+        const start2 = timeToMins(s2.startTime || '00:00');
+        const end2   = timeToMins(s2.endTime   || '00:00');
+
+        if (start1 < end2 && start2 < end1) {
+          s1.conflict = true;
+          s2.conflict = true;
+        }
+      }
+    }
+  }
+
+  return [...schedulable, ...unscheduled];
+}
+```
+
+The function mutates the `conflict` field in-place on the cloned session objects and then returns the schedulable sessions (sorted) followed by the unscheduled ones.
+
+## useConflictResolver Hook
+
+Inside the dashboard, `useConflictResolver` re-runs conflict detection reactively using `useMemo`. The hook is designed to be lightweight: it recalculates only when the `sessions` reference changes and delegates the core overlap logic to `detectOverlap` from `timeSelectors.ts`.
+
+```typescript
+// useConflictResolver.ts
+import { useMemo } from 'react';
+import { ClassSession } from '../../../types';
+import { detectOverlap } from '../utils/timeSelectors';
+
+export const useConflictResolver = (sessions: ClassSession[]) => {
+  const processedSessions = useMemo(() => {
+    if (sessions.length <= 1) {
+      return sessions.map(s => ({ ...s, conflict: false }));
+    }
+
+    // Clone to avoid mutating the original array
+    const updated = sessions.map(s => ({ ...s, conflict: false }));
+    const schedulable = updated.filter(
+      (s) => !s.isVirtual && s.day && s.startTime && s.endTime
+    );
+
+    for (let i = 0; i < schedulable.length; i++) {
+      for (let j = i + 1; j < schedulable.length; j++) {
+        if (detectOverlap(schedulable[i], schedulable[j])) {
+          schedulable[i].conflict = true;
+          schedulable[j].conflict = true;
+        }
+      }
+    }
+
+    return updated;
+  }, [sessions]);
+
+  return processedSessions;
+};
+```
+
+<Note>
+  `useConflictResolver` clones each session object before setting `conflict: true`, so the original `Schedule` state managed by `App.tsx` is never mutated directly.
+</Note>
+
+## detectOverlap and timeToMins
+
+The `detectOverlap` function in `timeSelectors.ts` is the single source of truth for the overlap condition used by the hook:
+
+```typescript
+// timeSelectors.ts
+export const timeToMins = (time: string): number => {
+  if (!time) return 0;
+  const [h, m] = time.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+
+export const detectOverlap = (s1: ClassSession, s2: ClassSession): boolean => {
+  // Different days → never overlap
+  if (!s1.day || !s2.day || s1.day !== s2.day) return false;
+  // Missing times → cannot evaluate
+  if (!s1.startTime || !s1.endTime || !s2.startTime || !s2.endTime) return false;
+
+  const start1 = timeToMins(s1.startTime);
+  const end1   = timeToMins(s1.endTime);
+  const start2 = timeToMins(s2.startTime);
+  const end2   = timeToMins(s2.endTime);
+
+  return start1 < end2 && start2 < end1;
+};
+```
+
+`timeToMins` converts a `"HH:MM"` string to an integer number of minutes since midnight, making arithmetic comparisons straightforward and avoiding any date-object overhead.
+
+## Visual Indicators
+
+Conflicting sessions are styled distinctly in both views so they are immediately noticeable:
+
+<CardGroup cols={2}>
+  <Card title="ScheduleGrid" icon="table-columns">
+    A pulsing `AlertTriangle` icon appears in the top-right corner of the session card. The card's background switches to the error container color (`!bg-error-container/85`) and a red ring is applied (`!ring-2 !ring-error/20`). In the exported PDF, conflict cells are rendered in `rgb(255, 0, 110)` regardless of the subject's assigned color.
+  </Card>
+  <Card title="ScheduleList" icon="list">
+    A bold **CHOQUE** badge (error variant) appears next to the time range. The card's left border color is overridden to the error color instead of the subject's assigned color.
+  </Card>
+</CardGroup>
+
+Clicking a conflicting session in either view opens the detail modal, which displays a **Choque de hora** badge and an additional **Resolver Conflicto** primary action button.
+
+## Exclusion of Virtual Sessions
+
+Sessions marked `isVirtual: true` — or those without `day`, `startTime`, or `endTime` — are always excluded from conflict evaluation in both `resolveConflicts` and `useConflictResolver`. They are returned in a separate bucket and rendered outside the time grid entirely.
+
+```typescript
+// Both paths apply this filter before the O(n²) comparison loop
+const schedulable = sessions.filter(
+  (s) => !s.isVirtual && s.day && s.startTime && s.endTime
+);
+```
+
+<Note>
+  Conflict detection is non-destructive — conflicted sessions are **never removed** from the schedule. Both overlapping sessions remain fully visible and functional; only their `conflict: boolean` flag is set to `true` and the visual style changes. You can still export, save, and share a schedule that contains conflicts.
+</Note>
+
+## Conflict Detection Summary
+
+<Accordion title="When does conflict detection run?">
+  Conflict detection runs at two distinct moments:
+
+  1. **At parse time** — `resolveConflicts()` is called at the end of `parsePDF()` and `parseRawText()` inside `sguRegexParser.ts`, before the `ParseResult` is returned to `useScheduleUpload`.
+  2. **Reactively in the dashboard** — `useConflictResolver(sessions)` recalculates via `useMemo` whenever the sessions array reference changes, such as after a color change or title update that produces a new `Schedule` object.
+</Accordion>
+
+<Accordion title="Algorithm complexity">
+  The conflict check uses a nested O(n²) loop over the schedulable sessions. For a typical UTM student schedule (5–8 subjects, 10–20 sessions), this is negligible. Sessions are pre-sorted by day and start time to ensure predictable flagging order.
+</Accordion>

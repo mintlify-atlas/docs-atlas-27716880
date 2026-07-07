@@ -1,0 +1,266 @@
+---
+title: "Inforario Feature-Driven Architecture"
+sidebarTitle: "Architecture"
+description: "Inforario uses a feature-driven frontend structure with isolated domain modules, a clean App.tsx router, and Supabase Edge Functions as the serverless backend."
+---
+
+Inforario v3.0 was rebuilt from a monolithic `App.tsx` into a **Feature-Driven Architecture (FDA)** — a structural philosophy where each business domain owns its own isolated module containing components, hooks, and utilities. This approach makes the codebase easier to navigate, test, and extend without any cross-domain side effects. The result is a frontend that scales gracefully and a `App.tsx` that stays under 100 lines.
+
+## Feature-Driven Architecture Philosophy
+
+In a Feature-Driven Architecture, the `src/features/` directory is the core of the application. Each subdirectory represents a distinct product domain — `uploader`, `schedule`, `landing`, `profile` — and is completely self-contained. A feature module may export components and hooks to `App.tsx` or sibling features, but it never reaches into another feature's internals. Global, cross-cutting concerns (shared UI primitives, layout elements, and utility hooks) live outside `features/` in `components/`, `hooks/`, and `services/`.
+
+This structure was chosen specifically to untangle the previous monolith and give AI-assisted development tools a clear, predictable map of where each piece of logic lives.
+
+## Directory Tree
+
+The full frontend source tree as defined in the project's architecture specification:
+
+```text
+src/
+├── components/                 # Global UI components, domain-agnostic
+│   ├── ui/                     # Atomic design system elements
+│   │   ├── Button.tsx          # Interactive buttons with built-in animations
+│   │   ├── Card.tsx            # Editorial-style shadow containers
+│   │   ├── Badge.tsx           # Status labels for subjects and classrooms
+│   │   └── Modal.tsx           # Overlay dialogs with AnimatePresence
+│   └── layout/                 # Global structural elements
+│       ├── Navbar.tsx          # Top navigation bar
+│       └── Footer.tsx          # Institutional footer and credits
+│
+├── features/                   # Core application modules (Business Logic)
+│   ├── landing/                # Welcome view and project presentation
+│   │   ├── components/         # HeroSection, FeatureCards, CallToAction
+│   │   └── LandingPage.tsx     # Landing feature entry point
+│   │
+│   ├── uploader/               # PDF processing and upload zone
+│   │   ├── components/         # DropZone, ProcessingView, FileErrorBanner
+│   │   ├── hooks/              # useScheduleUpload.ts (file state management)
+│   │   └── utils/              # sguRegexParser.ts (local text extraction logic)
+│   │
+│   ├── schedule/               # Interactive academic schedule core
+│   │   ├── components/         # ScheduleGrid (Desktop), ScheduleList (Mobile), SubjectCard
+│   │   ├── hooks/              # useScheduleCustomizer.ts, useConflictResolver.ts
+│   │   └── utils/              # timeSelectors.ts (time collision calculations)
+│   │
+│   └── profile/                # Student data and local session management
+│       ├── components/         # ProfileForm, PreferencesPanel
+│       └── hooks/              # useStudentProfile.ts
+│
+├── hooks/                      # Shared global utility hooks
+│   ├── useMediaQuery.ts        # Real-time viewport detection (Mobile vs Desktop)
+│   ├── useLocalStorage.ts      # Browser-level state persistence
+│   └── useCalendarStatus.ts    # Google Calendar connection state
+│
+├── services/                   # Infrastructure layer (keep operational and intact)
+│   ├── supabase/               # Supabase configuration and queries
+│   │   └── supabaseClient.ts   # DB client, auth helpers, parseScheduleFileWithEdge
+│   ├── google/                 # Google Calendar API integration
+│   │   └── googleCalendarEdge.ts  # buildCalendarEventsFromSchedule, syncCalendarEvents
+│   └── ics/                    # Native data conversion utilities
+│       └── icsGenerator.ts     # Generates standards-compliant .ics files
+│
+├── types/                      # Strict TypeScript type and interface definitions
+│   ├── index.ts                # Central export of shared types (AppView, Feature enums)
+│   ├── sgu.ts                  # SGU format interfaces (ClassSession, Subject, Teacher)
+│   └── database.ts             # Supabase table-mapped types
+│
+├── styles/                     # Global styles and design tokens
+│   └── globals.css             # Tailwind CSS injections and UTM typographic utilities
+│
+├── App.tsx                     # Clean orchestrator (~100 lines, acts as View Router)
+└── index.tsx                   # React DOM hydration entry point
+```
+
+---
+
+## Feature Modules
+
+### `features/uploader/` — PDF Upload and Parsing
+
+The uploader feature owns everything related to ingesting a schedule PDF and producing a typed `Schedule` object.
+
+<Accordion title="Components">
+  - **`DropZone`** — Drag-and-drop and click-to-browse file input. Accepts `.pdf` files only and delegates to the `useScheduleUpload` hook.
+  - **`ProcessingView`** — Full-screen animated overlay rendered via `AnimatePresence` while parsing is in progress.
+  - **`FileErrorBanner`** — Inline error display for unsupported file types, corrupted PDFs, or failed extraction attempts.
+</Accordion>
+
+<Accordion title="Hooks">
+  - **`useScheduleUpload`** — Manages the full upload lifecycle: file validation → pdfjs-dist text extraction → `sguRegexParser` → AI Edge Function fallback → success callback with the resulting `Schedule` object.
+</Accordion>
+
+<Accordion title="Utils">
+  - **`sguRegexParser.ts`** — The primary local parser. Uses tuned regular expressions to extract subject names (stripping mesh suffixes like `(A19)`), multi-day time blocks, classroom codes (`COD. AMB.`), and teacher names from the raw text output of pdfjs-dist.
+</Accordion>
+
+---
+
+### `features/schedule/` — Interactive Timetable
+
+The schedule feature is the product's core — it renders the parsed timetable, handles color customization, and surfaces conflicts.
+
+<Accordion title="Components">
+  - **`ScheduleGrid`** — Desktop week-view table. Renders subjects as colored cells spanning their time slots. Uses Framer Motion `layoutId` for smooth transitions.
+  - **`ScheduleList`** — Mobile-optimized card list. Each day's subjects appear as stacked `SubjectCard` items sorted by start time.
+  - **`SubjectCard`** — Shared atomic component displaying subject name, teacher, classroom code, and time range with a per-subject color accent.
+</Accordion>
+
+<Accordion title="Hooks">
+  - **`useConflictResolver`** — Detects overlapping `ClassSession` entries across subjects and returns a structured list of conflicts for display. Allows manual conflict acknowledgement.
+  - **`useScheduleCustomizer`** — Manages per-subject color overrides, name edits, and visibility toggles. State is persisted to `localStorage` via `useLocalStorage`.
+</Accordion>
+
+<Accordion title="Utils">
+  - **`timeSelectors.ts`** — Pure utility functions for comparing time ranges, computing overlap duration, grouping sessions by day, and sorting blocks chronologically.
+</Accordion>
+
+---
+
+### `features/landing/` — Home and Saved Schedules
+
+<Accordion title="Components and Entry Point">
+  - **`LandingPage.tsx`** — The feature's entry point and the first view students see. Orchestrates the hero section, upload zone, and the saved schedules list.
+  - **`components/`** — Houses `HeroSection`, `FeatureCards`, `CallToAction`, and `SavedSchedulesList`. The latter displays previously saved schedules pulled from Supabase (for authenticated users) or `localStorage` (for guests), with open, delete, and bulk-delete actions.
+</Accordion>
+
+---
+
+### `features/profile/` — Student Profile
+
+<Accordion title="Components and Hooks">
+  - **`ProfileForm`** — Form for viewing and editing the student's display name, career, and other profile metadata stored in the Supabase `profiles` table.
+  - **`useStudentProfile`** — Hook that wraps `getUserProfile` and exposes profile state with update and refresh handlers.
+</Accordion>
+
+---
+
+## Services Layer
+
+The `src/services/` directory is the **infrastructure layer** — it is kept strictly isolated from feature logic and must never be modified except when updating service credentials or API contracts.
+
+<CardGroup cols={2}>
+  <Card title="supabaseClient.ts" icon="database">
+    Initializes the `@supabase/supabase-js` client. Exports database operation helpers (`getUserSchedules`, `deleteSchedule`, `getUserProfile`, `getScheduleById`) and the `parseScheduleFileWithEdge` function, which calls the `extract-schedule` Edge Function for AI-powered PDF parsing.
+  </Card>
+  <Card title="googleCalendarEdge.ts" icon="calendar-days">
+    Handles Google Calendar integration. `buildCalendarEventsFromSchedule` converts a `Schedule` object into an array of Google Calendar event objects with correct recurring rules. `syncCalendarEvents` pushes those events to the user's primary calendar via OAuth2.
+  </Card>
+  <Card title="icsGenerator.ts" icon="file-export">
+    Pure utility that converts a `Schedule` object into a standards-compliant iCalendar (`.ics`) string. The output can be downloaded directly by the browser or shared with any calendar app that supports the RFC 5545 format (Apple Calendar, Outlook, Thunderbird).
+  </Card>
+  <Card title="No Direct Imports from Features" icon="shield-halved">
+    Feature modules must consume services through hooks or abstractions — never import from `services/` directly inside a component. This keeps infrastructure concerns separate from UI logic and makes service mocking straightforward.
+  </Card>
+</CardGroup>
+
+---
+
+## Global Components
+
+### `components/ui/` — Design System Primitives
+
+Every interactive element in the app is built on top of these four atomic components. They enforce visual consistency and integrate Framer Motion micro-interactions by default.
+
+| Component | Purpose |
+|---|---|
+| `Button.tsx` | Interactive buttons with `whileHover={{ scale: 1.02 }}` and `whileTap={{ scale: 0.98 }}` |
+| `Card.tsx` | Editorial-style containers with warm cream backgrounds and shadow elevation |
+| `Badge.tsx` | Compact status labels for subject types, classroom codes, and conflict indicators |
+| `Modal.tsx` | Overlay dialogs managed by Framer Motion `AnimatePresence` for enter/exit transitions |
+
+### `components/layout/` — Structural Shell
+
+- **`Navbar.tsx`** — Top navigation bar. Receives `currentView`, `onNavigate`, `currentSchedule`, `sessionUser`, and `userProfile` props from `App.tsx` to render context-aware controls.
+- **`Footer.tsx`** — Institutional footer with project credits.
+
+### `components/modals/` — Feature-Level Dialogs
+
+Application-level modals that are composed at the `App.tsx` or feature level:
+
+- **`AuthModal`** — Sign-in / sign-up flow via Supabase Auth.
+- **`CalendarModal`** — Initiates Google Calendar OAuth2 and shows sync status.
+- **`ConfirmResetModal`** — Destructive-action confirmation dialog for schedule deletion.
+- **`PremiumModal`** — Upsell overlay triggered when a guest user attempts to access a `Feature` enum value that requires authentication.
+
+---
+
+## Global Hooks
+
+Three utility hooks are shared across the entire application from `src/hooks/`:
+
+```typescript
+// Detect mobile vs desktop viewport in real time
+const isMobile = useMediaQuery('(max-width: 768px)');
+
+// Persist any serializable value to localStorage with typed get/set
+const [schedule, setSchedule] = useLocalStorage<Schedule | null>('inforario_schedule', null);
+
+// Read Google Calendar connection status and OAuth token state
+const { isConnected, calendarId } = useCalendarStatus();
+```
+
+---
+
+## App.tsx — The View Router
+
+`App.tsx` is intentionally constrained to ~100 lines. It is the sole orchestrator: it holds top-level state (current view, current schedule, session user, device ID, saved schedules), wires the `useScheduleUpload` hook, and delegates all rendering to the appropriate feature or page component based on the `AppView` enum state.
+
+```typescript
+// App.tsx — simplified view routing logic
+const [view, setView] = useState<AppView>(AppView.LANDING);
+
+{view === AppView.LOGIN     && <LoginPage ... />}
+{view === AppView.PROFILE   && <ProfilePage ... />}
+{view === AppView.ABOUT     && <AboutPage />}
+{view === AppView.LANDING   && <LandingPage ... />}
+{view === AppView.DASHBOARD && currentSchedule && <ScheduleDashboard ... />}
+```
+
+`AnimatePresence` wraps the `ProcessingView` overlay so it animates in and out without layout shifts. No business logic lives in `App.tsx` — only view coordination.
+
+---
+
+## Supabase Backend
+
+The `backend/supabase/functions/` directory contains two Deno-based Edge Functions:
+
+<Tabs>
+  <Tab title="extract-schedule">
+    **Path:** `backend/supabase/functions/extract-schedule/`
+
+    This function receives the raw text extracted from a UTM SGU PDF and sends it to the **Groq API** using the `llama-3.3-70b-versatile` large language model. The model returns a structured JSON object matching the `Schedule` interface, which is sent back to the frontend as the parsed schedule.
+
+    This function is invoked by `parseScheduleFileWithEdge` in `supabaseClient.ts` only when the local `sguRegexParser` cannot produce a confident result — typically for PDFs with unusual layouts or mixed text/image content.
+
+    ```bash
+    # Serve locally with environment variables
+    supabase functions serve extract-schedule \
+      --env-file ./supabase/functions/extract-schedule/.env
+    ```
+  </Tab>
+  <Tab title="google-calendar-sync">
+    **Path:** `backend/supabase/functions/google-calendar-sync/`
+
+    This function acts as a secure server-side proxy for the Google Calendar API, handling OAuth2 token exchange and event insertion without exposing client secrets in the browser. It receives a set of calendar event payloads from `syncCalendarEvents` in the frontend's `googleCalendarEdge.ts` service and creates recurring weekly events in the authenticated user's Google Calendar.
+  </Tab>
+</Tabs>
+
+---
+
+## Architectural Principles
+
+<CardGroup cols={2}>
+  <Card title="Single Responsibility (SRP)" icon="layer-group">
+    Every component, hook, and utility has one job. Visual feature components are capped at **150 lines** — anything longer must be split into sub-components within the feature's own `components/` subdirectory.
+  </Card>
+  <Card title="Strict TypeScript (no `any`)" icon="shield-check">
+    The use of implicit or explicit `any` types is prohibited. All data structures — SGU parser output, Supabase query results, and API responses — must implement typed interfaces defined in `types/sgu.ts` or `types/database.ts`.
+  </Card>
+  <Card title="State Encapsulation" icon="lock">
+    State lives as close as possible to where it is consumed. `App.tsx` holds only top-level navigation and session state. Feature-level state (subject colors, conflict acknowledgements, upload progress) is managed inside the feature's own hooks.
+  </Card>
+  <Card title="Smooth Animations with Framer Motion" icon="wand-magic-sparkles">
+    Every button carries `whileHover={{ scale: 1.02 }}` and `whileTap={{ scale: 0.98 }}` micro-interactions. Screen transitions use `AnimatePresence`. Grid-to-list view switching uses `layoutId` shared-layout animations for a seamless, native-quality feel.
+  </Card>
+</CardGroup>

@@ -1,0 +1,256 @@
+---
+title: "google-calendar-sync Edge Function Reference"
+sidebarTitle: "google-calendar-sync"
+description: "POST /functions/v1/google-calendar-sync — Creates recurring Google Calendar events from a schedule. Requires Supabase user auth and stored OAuth2 tokens."
+---
+
+The `google-calendar-sync` function is a Deno Edge Function deployed on Supabase. It reads a signed-in user's Google OAuth2 tokens from the `user_calendar_tokens` database table, automatically refreshes the access token if it is about to expire, and then creates the supplied events in the user's Google Calendar. All token management — including persisting refreshed tokens back to the database — happens inside the function; the calling client never handles OAuth credentials directly.
+
+<Warning>
+  Users **must** connect their Google Calendar account before calling this endpoint. The function looks up stored tokens by the authenticated user's ID. If no row exists in `user_calendar_tokens` for that user, the function returns `400`. Direct the user to complete the Google OAuth2 flow and ensure a row is inserted before invoking this endpoint.
+</Warning>
+
+## Endpoint
+
+```
+POST https://{project}.supabase.co/functions/v1/google-calendar-sync
+```
+
+The function accepts `POST` requests only. `OPTIONS` preflight requests are answered immediately with the shared CORS headers and a `200 ok` body.
+
+## Authentication
+
+This endpoint requires a **Supabase user JWT** — not the anon key. The token must belong to an authenticated user whose session was obtained via `supabase.auth.signIn*`. The function calls `supabase.auth.getUser()` to verify the token server-side and resolve the caller's `user_id`.
+
+```bash
+Authorization: Bearer <supabase-user-jwt>
+```
+
+<Note>
+  Passing the anon key in the `Authorization` header will cause `supabase.auth.getUser()` to return no user, and the function will respond with `401 Usuario no autenticado.`
+</Note>
+
+## Request
+
+### Headers
+
+| Header          | Required | Value                          |
+|-----------------|----------|--------------------------------|
+| `Authorization` | ✅        | `Bearer <supabase-user-jwt>`   |
+| `Content-Type`  | ✅        | `application/json`             |
+
+### Body
+
+<ParamField body="events" type="CalendarEventInput[]" required>
+  Array of one or more event objects to create in Google Calendar. Must contain at least one entry — an empty array returns `400`.
+
+  <Expandable title="CalendarEventInput fields">
+    <ParamField body="summary" type="string" required>
+      Event title as it will appear in Google Calendar (e.g., the subject name).
+    </ParamField>
+
+    <ParamField body="description" type="string">
+      Optional free-text description shown in the event detail view.
+    </ParamField>
+
+    <ParamField body="location" type="string">
+      Optional physical or virtual location string (e.g., `"Aula 301, Piso 3"`).
+    </ParamField>
+
+    <ParamField body="start" type="object" required>
+      Event start time.
+
+      <Expandable title="start fields">
+        <ParamField body="start.dateTime" type="string" required>
+          ISO 8601 datetime string for the first occurrence of the event (e.g., `"2025-02-03T07:00:00"`).
+        </ParamField>
+
+        <ParamField body="start.timeZone" type="string" required>
+          IANA time zone identifier (e.g., `"America/Guayaquil"`). Must match the `end.timeZone` value.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField body="end" type="object" required>
+      Event end time.
+
+      <Expandable title="end fields">
+        <ParamField body="end.dateTime" type="string" required>
+          ISO 8601 datetime string for the end of the first occurrence (e.g., `"2025-02-03T09:00:00"`).
+        </ParamField>
+
+        <ParamField body="end.timeZone" type="string" required>
+          IANA time zone identifier. Should match `start.timeZone`.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField body="recurrence" type="string[]">
+      Optional array of RFC 5545 recurrence rule strings. For a weekly class that ends on a specific date, use a rule such as `["RRULE:FREQ=WEEKLY;UNTIL=20250730T235959Z"]`. If omitted, a single non-recurring event is created.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="calendarId" type="string">
+  Google Calendar ID to add the events to. Defaults to `"primary"` (the user's default calendar) when not provided.
+</ParamField>
+
+### Example request
+
+```bash
+curl -X POST \
+  https://{project}.supabase.co/functions/v1/google-calendar-sync \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "calendarId": "primary",
+    "events": [
+      {
+        "summary": "SISTEMAS DISTRIBUIDOS",
+        "description": "Docente: PÉREZ JUAN | Aula 301, Piso 3",
+        "location": "Aula 301, Piso 3",
+        "start": {
+          "dateTime": "2025-02-03T07:00:00",
+          "timeZone": "America/Guayaquil"
+        },
+        "end": {
+          "dateTime": "2025-02-03T09:00:00",
+          "timeZone": "America/Guayaquil"
+        },
+        "recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20250730T235959Z"]
+      },
+      {
+        "summary": "BASES DE DATOS AVANZADAS",
+        "description": "Docente: GÓMEZ ANA | Aula 205, Piso 2",
+        "location": "Aula 205, Piso 2",
+        "start": {
+          "dateTime": "2025-02-05T09:00:00",
+          "timeZone": "America/Guayaquil"
+        },
+        "end": {
+          "dateTime": "2025-02-05T11:00:00",
+          "timeZone": "America/Guayaquil"
+        },
+        "recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20250730T235959Z"]
+      }
+    ]
+  }'
+```
+
+## Response
+
+### 200 — Success
+
+<ResponseField name="success" type="boolean">
+  Always `true` on a 200 response.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable summary, e.g. `"Se crearon 2 evento(s) en Google Calendar."`.
+</ResponseField>
+
+<ResponseField name="events" type="array">
+  Array of objects describing each event that was successfully created in Google Calendar.
+
+  <Expandable title="Event result fields">
+    <ResponseField name="id" type="string">
+      Google Calendar event ID assigned by the Google Calendar API (e.g., `"abc123xyz_20250203T070000Z"`).
+    </ResponseField>
+
+    <ResponseField name="htmlLink" type="string">
+      Optional direct URL to open the event in the Google Calendar web UI (e.g., `"https://www.google.com/calendar/event?eid=..."`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example success response
+
+```json
+{
+  "success": true,
+  "message": "Se crearon 2 evento(s) en Google Calendar.",
+  "events": [
+    {
+      "id": "abc123xyz_20250203T070000Z",
+      "htmlLink": "https://www.google.com/calendar/event?eid=abc123xyz"
+    },
+    {
+      "id": "def456uvw_20250205T090000Z",
+      "htmlLink": "https://www.google.com/calendar/event?eid=def456uvw"
+    }
+  ]
+}
+```
+
+## Error responses
+
+| Status | Condition | Body (`message`) |
+|--------|-----------|------------------|
+| `400`  | `events` array is missing or empty | `"Debes enviar al menos un evento."` |
+| `400`  | No token row found in `user_calendar_tokens` for the user | `"No hay tokens de Google Calendar para este usuario. Conecta Google primero."` |
+| `400`  | Access token is expired but `refresh_token` is `null` | `"Tu cuenta no tiene refresh token. Reconecta Google Calendar para continuar."` |
+| `401`  | `Authorization` header is absent | `"Falta el token de autenticación."` |
+| `401`  | JWT is present but resolves to no user | `"Usuario no autenticado."` |
+| `405`  | Request method is not `POST` | `"Método no permitido."` |
+| `500`  | `SUPABASE_URL` or `SUPABASE_ANON_KEY` not set | `"Faltan variables SUPABASE_URL o SUPABASE_ANON_KEY."` |
+| `500`  | `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` not set | `"Faltan secretos GOOGLE_CLIENT_ID o GOOGLE_CLIENT_SECRET."` |
+| `502+` | Google Calendar API returned a non-OK status | Forwarded Google error message |
+
+## Environment variables
+
+<ParamField query="SUPABASE_URL" type="string" required>
+  The base URL of your Supabase project (e.g., `https://xxxx.supabase.co`). Used to initialise the Supabase client that verifies the user JWT and reads/writes token rows.
+</ParamField>
+
+<ParamField query="SUPABASE_ANON_KEY" type="string" required>
+  The public anon key of your Supabase project. Combined with the user-supplied JWT via the `Authorization` header to create an RLS-aware Supabase client.
+</ParamField>
+
+<ParamField query="GOOGLE_CLIENT_ID" type="string" required>
+  OAuth2 client ID from Google Cloud Console. Required to refresh expired access tokens.
+</ParamField>
+
+<ParamField query="GOOGLE_CLIENT_SECRET" type="string" required>
+  OAuth2 client secret from Google Cloud Console. Required to refresh expired access tokens.
+</ParamField>
+
+## Token refresh logic
+
+The function checks whether the stored access token needs refreshing before it attempts to create any calendar events. The check uses a **60-second safety margin** (`REFRESH_MARGIN_MS = 60 * 1000`): if the stored `expiry_date` is within 60 seconds of the current time (or is missing / unparseable), the token is considered expired.
+
+**Pre-flight refresh flow:**
+
+```
+1. Read token row from user_calendar_tokens for authenticated user.
+2. If expiry_date ≤ now + 60 s:
+     POST https://oauth2.googleapis.com/token
+       grant_type=refresh_token
+       client_id, client_secret, refresh_token
+     → Receive new access_token, expires_in, (optionally) new refresh_token.
+     UPDATE user_calendar_tokens SET access_token, expiry_date, refresh_token
+       WHERE user_id = <user>.
+3. Proceed to insert events with the fresh access_token.
+```
+
+**Mid-flight retry on 401/403:**
+
+If a Google Calendar API call fails with HTTP `401` or `403` during event insertion (e.g., the token was silently invalidated), and a `refresh_token` is available, the function performs a second refresh, updates the database row, and retries the failing event **once**. If the retry also fails, the error is propagated and the entire request fails.
+
+<Note>
+  If Google issues a new `refresh_token` during either refresh cycle (uncommon but possible), the new value replaces the old one in `user_calendar_tokens`. If Google does not return a new `refresh_token`, the existing one is preserved.
+</Note>
+
+## Database table: `user_calendar_tokens`
+
+The function reads from and writes to a single Supabase table:
+
+| Column          | Type     | Description |
+|-----------------|----------|-------------|
+| `user_id`       | `uuid`   | Foreign key to the Supabase `auth.users` table. Used as the lookup key. |
+| `access_token`  | `text`   | Current Google OAuth2 access token. |
+| `refresh_token` | `text?`  | Google OAuth2 refresh token. May be `null` if the OAuth flow did not return one. |
+| `expiry_date`   | `text?`  | ISO 8601 datetime string representing when `access_token` expires. |
+
+<Tip>
+  Populate `user_calendar_tokens` during your Google OAuth2 callback handler. Store the `access_token`, `refresh_token`, and compute `expiry_date` as `new Date(Date.now() + expires_in * 1000).toISOString()`. A missing or `null` `refresh_token` will block silent re-authentication and force the user to reconnect.
+</Tip>

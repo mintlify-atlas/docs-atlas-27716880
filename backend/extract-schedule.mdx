@@ -1,0 +1,188 @@
+---
+title: "extract-schedule Edge Function Reference"
+sidebarTitle: "extract-schedule"
+description: "POST /functions/v1/extract-schedule — Sends PDF text to Groq's LLM and returns structured schedule sessions. Accepts pdfText, returns sessions array."
+---
+
+The `extract-schedule` function is a Deno Edge Function deployed on Supabase. It receives raw text extracted from a UTM schedule PDF, forwards it to Groq's `llama-3.3-70b-versatile` model with a strict system prompt, and returns a validated array of structured class sessions. The function handles all session normalisation and virtual-class detection internally — the caller only needs to supply the plain PDF text.
+
+<Warning>
+  This function does **not** require user authentication. Any request bearing a valid Supabase anon key can invoke it. If the endpoint should be restricted to authenticated users, protect it at the infrastructure level (e.g., RLS policies, API gateway rules) rather than relying on this function alone.
+</Warning>
+
+## Endpoint
+
+```
+POST https://{project}.supabase.co/functions/v1/extract-schedule
+```
+
+The function accepts `POST` requests only. An `OPTIONS` preflight request returns the shared CORS headers (`Access-Control-Allow-Origin: *`) and a `200 ok` response without executing any LLM logic.
+
+## Authentication
+
+Pass the Supabase **anon key** as a Bearer token in the `Authorization` header. This is the public client key found in your Supabase project settings — no user session is needed.
+
+```bash
+Authorization: Bearer <supabase-anon-key>
+```
+
+## Request
+
+### Headers
+
+| Header          | Required | Value                                   |
+|-----------------|----------|-----------------------------------------|
+| `Authorization` | ✅        | `Bearer <supabase-anon-key>`            |
+| `Content-Type`  | ✅        | `application/json`                      |
+
+### Body
+
+<ParamField body="pdfText" type="string" required>
+  The raw plain-text content extracted from a UTM schedule PDF. The string must be non-empty after trimming whitespace. The function sends this verbatim to Groq inside a user-role message: `"Extrae el horario del siguiente texto:\n{pdfText}"`.
+</ParamField>
+
+### Example request
+
+```bash
+curl -X POST \
+  https://{project}.supabase.co/functions/v1/extract-schedule \
+  -H "Authorization: Bearer <supabase-anon-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pdfText": "SISTEMAS DISTRIBUIDOS\nDocente: PÉREZ JUAN\nLunes 07:00 - 09:00 Aula 301 Piso 3\nBASES DE DATOS AVANZADAS\nDocente: GÓMEZ ANA\nMiércoles 09:00 - 11:00 Aula 205 Piso 2\nMATERIA VIRTUAL\nDocente: TORRES LUIS"
+  }'
+```
+
+## Response
+
+### 200 — Success
+
+Returns a JSON object with a single `sessions` key containing an array of validated, normalised class sessions. Sessions that fail validation (missing subject, invalid day, or malformed time on a non-virtual class) are silently dropped before the response is sent.
+
+<ResponseField name="sessions" type="Session[]">
+  Array of validated class session objects. May be empty if none of the model's output passes validation.
+
+  <Expandable title="Session object fields">
+    <ResponseField name="subject" type="string">
+      Name of the subject. Prefixes such as `"TECNOLOGÍAS DE LA "` and mesh suffixes like `"(A19)"` are stripped by both the system prompt and the frontend mapping layer.
+    </ResponseField>
+
+    <ResponseField name="teacher" type="string">
+      Full name of the teacher. Defaults to `"N/A"` if not present in the source text.
+    </ResponseField>
+
+    <ResponseField name="day" type="string | undefined">
+      Day of the week. One of `"Lunes"`, `"Martes"`, `"Miércoles"`, `"Jueves"`, or `"Viernes"`. Set to `undefined` for virtual sessions.
+    </ResponseField>
+
+    <ResponseField name="startTime" type="string | undefined">
+      Class start time in `HH:MM` (24-hour) format. Set to `undefined` for virtual sessions.
+    </ResponseField>
+
+    <ResponseField name="endTime" type="string | undefined">
+      Class end time in `HH:MM` (24-hour) format. Set to `undefined` for virtual sessions.
+    </ResponseField>
+
+    <ResponseField name="location" type="string">
+      Classroom identifier (e.g., `"Aula 301"`). Always `"Virtual"` for virtual sessions.
+    </ResponseField>
+
+    <ResponseField name="floor" type="string">
+      Floor number or label (e.g., `"Piso 3"`). Defaults to `"N/A"` if not present, and always `"N/A"` for virtual sessions.
+    </ResponseField>
+
+    <ResponseField name="isVirtual" type="boolean">
+      `true` when any of the following conditions hold:
+      - The model explicitly set `isVirtual: true`.
+      - The `location` string contains `"VIRTUAL"` (case-insensitive).
+      - `day`, `startTime`, and `endTime` are all missing or empty.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example response
+
+```json
+{
+  "sessions": [
+    {
+      "subject": "SISTEMAS DISTRIBUIDOS",
+      "teacher": "PÉREZ JUAN",
+      "day": "Lunes",
+      "startTime": "07:00",
+      "endTime": "09:00",
+      "location": "Aula 301",
+      "floor": "Piso 3",
+      "isVirtual": false
+    },
+    {
+      "subject": "BASES DE DATOS AVANZADAS",
+      "teacher": "GÓMEZ ANA",
+      "day": "Miércoles",
+      "startTime": "09:00",
+      "endTime": "11:00",
+      "location": "Aula 205",
+      "floor": "Piso 2",
+      "isVirtual": false
+    },
+    {
+      "subject": "MATERIA VIRTUAL",
+      "teacher": "TORRES LUIS",
+      "day": undefined,
+      "startTime": undefined,
+      "endTime": undefined,
+      "location": "Virtual",
+      "floor": "N/A",
+      "isVirtual": true
+    }
+  ]
+}
+```
+
+## Error responses
+
+| Status | Condition | Body |
+|--------|-----------|------|
+| `400`  | `pdfText` is missing or blank | `{ "error": "pdfText es obligatorio." }` |
+| `405`  | Request method is not `POST` | `{ "error": "Método no permitido." }` |
+| `500`  | `GROQ_API_KEY` environment variable is not set | `{ "error": "Falta GROQ_API_KEY" }` |
+| `502`  | Groq API returned a non-OK status | `{ "error": "<groq error message>" }` |
+| `502`  | Groq response body was empty or not valid JSON | `{ "error": "Groq respondió sin contenido parseable." }` |
+
+## Environment variables
+
+<ParamField query="GROQ_API_KEY" type="string" required>
+  Secret API key for the Groq platform. Set this in your Supabase project's Edge Function secrets (`supabase secrets set GROQ_API_KEY=...`). The function returns `500` immediately if this variable is absent.
+</ParamField>
+
+<ParamField query="GROQ_MODEL" type="string">
+  Groq model identifier to use for extraction. Defaults to `llama-3.3-70b-versatile` when not set. Override this to switch models without redeploying.
+</ParamField>
+
+## Session validation rules
+
+The function runs a multi-step validation pipeline on every object returned by the model before including it in the response.
+
+<Note>
+  Sessions that fail validation are **silently filtered out**. The caller should check the length of the returned `sessions` array and prompt the user to retry if it is unexpectedly low.
+</Note>
+
+1. **Type coercion** — Every field is cast to a string and trimmed. Non-string values fall back to sensible defaults (`"N/A"` for teacher/floor, `""` for day/times, `"Virtual"` for location).
+2. **Virtual detection** — A session is marked `isVirtual = true` if `isVirtual` is already `true`, OR the `location` string contains `"VIRTUAL"` (case-insensitive), OR `day`, `startTime`, and `endTime` are all empty.
+3. **Virtual field clearing** — On virtual sessions, `day`, `startTime`, and `endTime` are set to `undefined` and `location` is overwritten with `"Virtual"`.
+4. **Filter pass** — A session is kept only if `subject` is non-empty AND either `isVirtual` is `true` OR all three of `day` (from the allowed set), `startTime`, and `endTime` (both matching `HH:MM`) are valid.
+
+## LLM system prompt summary
+
+The system prompt sent to Groq instructs the model to:
+
+- Return **only** a valid JSON object with a root key `"sessions"` containing an array.
+- Include every class session found, including virtual ones (`isVirtual: true`).
+- Strip subject-name prefixes such as `"TECNOLOGÍAS DE LA "` and the name of the degree programme.
+- Omit mesh/curriculum suffixes in parentheses such as `"(A19)"`, `"(ITINERARIO)"`, or `"(VIRTUAL)"`.
+- Use `"MATERIA VIRTUAL"` as the trigger to set `isVirtual: true` when the source explicitly labels a subject as virtual.
+- Set `temperature: 0.1` and `response_format: { type: "json_object" }` to maximise determinism.
+
+<Tip>
+  The frontend client (`parseScheduleFileWithEdge`) performs an additional sanitisation pass on `subject` values after receiving the response, removing any residual prefixes or parenthetical suffixes the model may have missed. Both layers together ensure clean subject names reach the UI.
+</Tip>

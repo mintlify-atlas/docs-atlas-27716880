@@ -1,0 +1,103 @@
+---
+title: "Inforario: Academic Schedule Manager for UTM Students"
+sidebarTitle: "Introduction"
+description: "Inforario converts UTM SGU schedule PDFs into interactive timetables with conflict detection, color customization, and calendar export. No manual data entry required."
+---
+
+Inforario is a React 19 + TypeScript single-page application built for students at the Universidad Técnica de Manabí (UTM). It eliminates the tedious, error-prone task of manually copying your semester schedule by reading UTM's Sistema de Gestión Universitaria (SGU) PDF exports directly — extracting every subject, time block, classroom code, and teacher name in seconds and rendering them as an interactive, exportable timetable.
+
+## What Is Inforario?
+
+Inforario is a client-first web application powered by Vite, React 19, and strict TypeScript. It uses **pdfjs-dist** to extract raw text from SGU-formatted PDFs entirely in the browser, meaning your academic data never leaves your device during the primary parsing step. When the local regex parser encounters an ambiguous or scanned PDF, the app automatically falls back to an AI extraction pipeline — a Supabase Edge Function running on Deno that calls the `llama-3.3-70b-versatile` model on the Groq API. For fully scanned image-based PDFs, **Tesseract.js** provides an additional OCR fallback layer, all within the same seamless upload flow.
+
+The frontend persists schedules locally via `localStorage` for guests and syncs to a Supabase PostgreSQL database for authenticated users. Google Calendar OAuth2 integration and standard `.ics` file export mean your timetable can live wherever your calendar does.
+
+## Who Is It For?
+
+Inforario is designed specifically for UTM students who receive their semester schedule as a PDF from the SGU portal. Instead of screenshot-cropping or re-typing every class block into a planner, students drop their PDF onto the app and get a fully rendered, color-coded timetable in under ten seconds — with automatic conflict warnings if two subjects overlap.
+
+## Two Parsing Paths
+
+Inforario uses a dual-path strategy to handle the full range of SGU PDF formats:
+
+<CardGroup cols={2}>
+  <Card title="Local Regex Parser" icon="code">
+    `sguRegexParser.ts` uses carefully tuned regular expressions to parse the structured text extracted by **pdfjs-dist** from digital PDFs. It captures subject names (stripping curriculum suffixes like `(A19)`), day/time combinations, classroom codes (`COD. AMB.`), and teacher names. This path runs entirely offline with zero latency.
+  </Card>
+  <Card title="AI Edge Function Fallback" icon="sparkles">
+    When the regex parser cannot confidently extract a complete schedule, the `extract-schedule` Supabase Edge Function takes over. It sends the raw PDF text to the **Groq API** using the `llama-3.3-70b-versatile` model and returns a structured JSON schedule. **Tesseract.js** OCR handles scanned image PDFs before this step.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="SGU PDF Parsing" icon="file-pdf">
+    Drag-and-drop your UTM SGU schedule PDF. pdfjs-dist extracts the text client-side; the local regex parser or Groq AI fallback produces a typed `Schedule` object in seconds.
+  </Card>
+  <Card title="Conflict Detection" icon="triangle-exclamation">
+    The `useConflictResolver` hook and `timeSelectors` utilities automatically detect overlapping time blocks across subjects and surface them visually so you can resolve scheduling conflicts before your semester begins.
+  </Card>
+  <Card title="Google Calendar Sync" icon="calendar">
+    Authenticate with Google OAuth2 and push your entire timetable as recurring weekly events using `buildCalendarEventsFromSchedule` and `syncCalendarEvents` from the `googleCalendarEdge` service.
+  </Card>
+  <Card title="ICS Export" icon="arrow-down-to-line">
+    Generate a standards-compliant `.ics` file with `generateICS` and import it into Apple Calendar, Outlook, or any calendar application that supports the iCalendar format.
+  </Card>
+  <Card title="Cloud Persistence" icon="cloud">
+    Authenticated users get full schedule persistence via Supabase PostgreSQL. Schedules sync across devices and can be managed (open, rename, delete, bulk-delete) from the Landing view.
+  </Card>
+  <Card title="Responsive Views" icon="mobile">
+    `ScheduleGrid` provides a desktop week-view table. `ScheduleList` delivers a mobile-optimized card list. Both views are driven by the `useMediaQuery` global hook and animated with Framer Motion shared-layout transitions.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+Inforario follows a **Feature-Driven Architecture (FDA)**: business logic is split into isolated domain modules under `src/features/`, each owning its own components, hooks, and utilities. A thin `App.tsx` (~100 lines) acts as the sole view router, switching between states defined by the `AppView` enum. Supabase provides authentication, the PostgreSQL database, and serverless Edge Functions written in Deno as the backend layer.
+
+| Layer | Technology |
+|---|---|
+| Frontend framework | React 19 + TypeScript (strict) |
+| Build tool | Vite 6 |
+| Styling | Tailwind CSS + custom UTM design tokens |
+| Animations | Framer Motion 11 |
+| PDF parsing | pdfjs-dist 4, Tesseract.js 5 |
+| Backend / Auth / DB | Supabase (PostgreSQL + Edge Functions) |
+| AI extraction | Groq API — `llama-3.3-70b-versatile` |
+| Calendar export | Google Calendar API (OAuth2), ICS |
+
+## Application Views
+
+The `AppView` enum defines every top-level route the `App.tsx` router can render:
+
+```typescript
+export enum AppView {
+  LANDING   = 'LANDING',    // Home page with upload zone and saved schedules list
+  DASHBOARD = 'DASHBOARD',  // Interactive timetable view for a loaded schedule
+  ABOUT     = 'ABOUT',      // Project info and credits
+  LOGIN     = 'LOGIN',      // Authentication page
+  PROFILE   = 'PROFILE',    // Student profile and preferences
+}
+```
+
+## Feature Access Control
+
+The `Feature` enum drives the app's permission model, separating free functionality from premium capabilities:
+
+```typescript
+export enum Feature {
+  UPLOAD           = 'UPLOAD',            // Free — upload a PDF
+  PROCESS          = 'PROCESS',           // Free — parse and render the schedule
+  RESOLVE_CONFLICT = 'RESOLVE_CONFLICT',  // Free — view conflict warnings
+  EDIT_NAME        = 'EDIT_NAME',         // Free — rename subjects
+  SAVE_CLOUD       = 'SAVE_CLOUD',        // Premium — persist to Supabase DB
+  CUSTOMIZE_COLOR  = 'CUSTOMIZE_COLOR',   // Premium — per-subject color themes
+  DOWNLOAD_PDF     = 'DOWNLOAD_PDF',      // Premium — export as PDF via jsPDF
+  SYNC_CALENDAR    = 'SYNC_CALENDAR',     // Premium — Google Calendar / ICS sync
+}
+```
+
+<Tip>
+  Guest users (unauthenticated) can upload, parse, view conflicts, and rename subjects without any account. Sign in with Supabase Auth to unlock cloud save, color customization, PDF download, and calendar sync.
+</Tip>

@@ -1,72 +1,89 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Inforario",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#004925",
+    "light": "#E6F4ED",
+    "dark": "#002B16"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/DavidCevallos15/inforario-IA-null"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/DavidCevallos15/inforario-IA-null"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/schedule-upload",
+              "features/schedule-viewer",
+              "features/conflict-detection",
+              "features/customization"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/google-calendar",
+              "integrations/ics-export",
+              "integrations/supabase-auth"
+            ]
+          },
+          {
+            "group": "Configuration & Deployment",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/supabase-setup",
+              "configuration/local-development"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Backend Reference",
+        "groups": [
+          {
+            "group": "Edge Functions",
+            "pages": [
+              "backend/extract-schedule",
+              "backend/google-calendar-sync"
+            ]
+          },
+          {
+            "group": "Frontend Services",
+            "pages": [
+              "backend/supabase-client",
+              "backend/sgu-parser",
+              "backend/ics-generator"
+            ]
+          },
+          {
+            "group": "Data Types",
+            "pages": [
+              "backend/types-reference"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

@@ -1,0 +1,310 @@
+---
+title: "Sync Your Schedule to Google Calendar"
+sidebarTitle: "Google Calendar"
+description: "Push your UTM schedule as recurring weekly events to Google Calendar using Inforario's OAuth2 integration and the google-calendar-sync Edge Function."
+---
+
+Inforario can push your entire parsed UTM schedule to Google Calendar as recurring weekly events, one per class session, covering the full academic semester you specify. The integration is built on a Supabase Edge Function (`google-calendar-sync`) that runs server-side, automatically refreshes expired OAuth2 tokens, and inserts events directly through the Google Calendar REST API — so your timetable appears in Google Calendar just as it does in Inforario: subject name, classroom location, teacher, and a weekly recurrence rule until the semester ends.
+
+## How It Works End-to-End
+
+<Steps>
+  <Step title="Connect Google Calendar">
+    The user authenticates with their Supabase account and links Google Calendar. The OAuth2 flow stores both an `access_token` and a `refresh_token` in the `user_calendar_tokens` table in Supabase.
+  </Step>
+  <Step title="Open the Calendar Modal">
+    From the dashboard, the user clicks **Export / Sync Calendar**. The `CalendarModal` opens and checks the `user_calendar_tokens` table via the `useCalendarStatus` hook to confirm the Google account is linked.
+  </Step>
+  <Step title="Build Calendar Events">
+    Inforario calls `buildCalendarEventsFromSchedule(schedule, semesterStart, semesterEnd, timeZone)`, which iterates over every `ClassSession` in the parsed schedule and returns an array of `CalendarEventInput` objects — each carrying a computed `DTSTART`, `DTEND`, and a weekly `RRULE` that repeats until the end of semester.
+  </Step>
+  <Step title="Invoke the Edge Function">
+    `syncCalendarEvents({ calendarId, events })` forwards the built events to the `google-calendar-sync` Supabase Edge Function via `supabase.functions.invoke`.
+  </Step>
+  <Step title="Edge Function Inserts Events">
+    The Edge Function authenticates the caller, reads their tokens from `user_calendar_tokens`, refreshes the `access_token` if it is within 60 seconds of expiry, then inserts each event via `POST /calendar/v3/calendars/{calendarId}/events`. If a `401` or `403` is returned for any single event, it performs a one-time token refresh and retries before propagating the error.
+  </Step>
+</Steps>
+
+<Warning>
+  Google Calendar sync requires a Supabase account and a connected Google Calendar. It will **not** work for guest/device-ID users — the Edge Function validates the caller's Supabase JWT and queries `user_calendar_tokens`; both steps fail for unauthenticated sessions.
+</Warning>
+
+---
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Supabase Account" icon="database">
+    The user must be signed in with a valid Supabase session. Guest users (identified by a `dev-` device ID) are rejected at the UUID-validation gate in `supabaseClient.ts`.
+  </Card>
+  <Card title="Google Calendar Connected" icon="calendar">
+    The user must have completed the Google OAuth2 flow so that a row exists in `user_calendar_tokens` for their user ID. The `useCalendarStatus` hook surfaces this status in the UI.
+  </Card>
+</CardGroup>
+
+---
+
+## API Reference
+
+### `CalendarEventInput`
+
+The data shape passed to the Edge Function for each calendar event.
+
+```typescript
+export interface CalendarEventInput {
+  summary: string;           // Class subject name
+  description?: string;      // e.g. "Docente: Prof. García"
+  location?: string;         // Classroom / building
+  start: {
+    dateTime: string;        // ISO 8601 — first occurrence of the class
+    timeZone: string;        // IANA timezone, e.g. "America/Guayaquil"
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  recurrence?: string[];     // e.g. ["RRULE:FREQ=WEEKLY;UNTIL=20241215T235959Z"]
+}
+```
+
+---
+
+### `buildCalendarEventsFromSchedule`
+
+Converts a parsed `Schedule` into an array of `CalendarEventInput` objects ready for the Edge Function.
+
+```typescript
+import { buildCalendarEventsFromSchedule } from '@/services/google/googleCalendarEdge';
+
+const events = buildCalendarEventsFromSchedule(
+  schedule,       // Schedule — the full parsed timetable object
+  semesterStart,  // Date — first day of the academic semester
+  semesterEnd,    // Date — last day of the academic semester
+  timeZone        // string (optional) — defaults to Intl.DateTimeFormat().resolvedOptions().timeZone
+);
+// returns CalendarEventInput[]
+```
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    <ParamField path="schedule" type="Schedule" required>
+      The full parsed schedule object. Its `sessions` array is iterated to produce events. See the `Schedule` type below.
+    </ParamField>
+    <ParamField path="semesterStart" type="Date" required>
+      The first day of the academic semester. Used to compute the first occurrence of each weekday class via `getFirstDateOfDay`.
+    </ParamField>
+    <ParamField path="semesterEnd" type="Date" required>
+      The last day of the academic semester. Converted to `YYYYMMDDTHHMMSSZ` format and used as the `UNTIL` value in each `RRULE`.
+    </ParamField>
+    <ParamField path="timeZone" type="string">
+      An IANA timezone string (e.g. `"America/Guayaquil"`). Defaults to the device's local timezone via `Intl.DateTimeFormat().resolvedOptions().timeZone`.
+    </ParamField>
+  </Accordion>
+  <Accordion title="Sessions that are skipped">
+    A session is **excluded** from the output if any of the following are true:
+
+    - `session.conflict === true` — the session has a scheduling conflict
+    - `session.isVirtual === true` — the session has no physical time slot
+    - `session.day` is `undefined` or empty
+    - `session.startTime` or `session.endTime` is `undefined` or empty
+    - The computed first occurrence date falls after `semesterEnd`
+  </Accordion>
+  <Accordion title="RRULE format">
+    Each event carries a single recurrence rule with the format:
+
+    ```text
+    RRULE:FREQ=WEEKLY;UNTIL=20241215T235959Z
+    ```
+
+    The `UNTIL` timestamp is derived from `semesterEnd` with its time set to `23:59:59` and serialized to UTC `Z` format. There is no `BYDAY` constraint in the Edge path (the start date already pins the correct weekday); the `googleAuth.ts` direct-API path additionally appends `BYDAY=MO|TU|WE|TH|FR`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### `syncCalendarEvents`
+
+Sends the built events to the `google-calendar-sync` Edge Function and returns the sync result.
+
+```typescript
+import { syncCalendarEvents } from '@/services/google/googleCalendarEdge';
+
+const result = await syncCalendarEvents({
+  calendarId: 'primary',   // optional — defaults to 'primary'
+  events,                  // CalendarEventInput[]
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    <ParamField path="calendarId" type="string">
+      The Google Calendar ID to insert events into. Defaults to `'primary'` if omitted.
+    </ParamField>
+    <ParamField path="events" type="CalendarEventInput[]" required>
+      The array of events produced by `buildCalendarEventsFromSchedule`. The function returns early with a failure response if the array is empty.
+    </ParamField>
+  </Accordion>
+  <Accordion title="Return type — SyncCalendarResponse">
+    <ResponseField name="success" type="boolean">
+      `true` if all events were created without error.
+    </ResponseField>
+    <ResponseField name="message" type="string">
+      A human-readable status message, e.g. `"Se crearon 18 evento(s) en Google Calendar."`.
+    </ResponseField>
+    <ResponseField name="events" type="Array<{ id: string; htmlLink?: string }>">
+      An array of the created Google Calendar event objects, each containing the event's `id` and an optional direct `htmlLink`.
+    </ResponseField>
+  </Accordion>
+  <Accordion title="Early-exit conditions">
+    The function returns immediately with `{ success: false, ... }` in the following cases (no Edge Function call is made):
+
+    - Supabase is not configured (`isSupabaseConfigured()` returns `false`)
+    - `events` array is empty
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Edge Function: `google-calendar-sync`
+
+The Edge Function is deployed at `supabase/functions/google-calendar-sync/index.ts` and runs on Deno. It requires the following Supabase secrets to be set:
+
+```bash
+SUPABASE_URL
+SUPABASE_ANON_KEY
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+```
+
+### Token Refresh Logic
+
+The function checks whether the stored `access_token` needs refreshing before making any Google API calls:
+
+```typescript
+const REFRESH_MARGIN_MS = 60 * 1000; // 60-second safety margin
+
+const needsRefresh = (expiryDate: string | null): boolean => {
+  if (!expiryDate) return true;
+  const parsed = Date.parse(expiryDate);
+  if (Number.isNaN(parsed)) return true;
+  return parsed <= Date.now() + REFRESH_MARGIN_MS;
+};
+```
+
+If `needsRefresh` returns `true`, a `refresh_token` grant is sent to `https://oauth2.googleapis.com/token`. The new `access_token` and updated `expiry_date` are written back to `user_calendar_tokens` before any events are inserted.
+
+### Per-Event Retry on 401 / 403
+
+If inserting a single event returns `HTTP 401` or `HTTP 403`, the Edge Function performs a second token refresh inline and retries that event once. This handles the edge case where a token expires mid-batch.
+
+### Request / Response shape
+
+```typescript
+// POST body
+{
+  "calendarId": "primary",
+  "events": CalendarEventInput[]
+}
+
+// Success response
+{
+  "success": true,
+  "message": "Se crearon 18 evento(s) en Google Calendar.",
+  "events": [{ "id": "abc123", "htmlLink": "https://calendar.google.com/..." }, ...]
+}
+
+// Error response
+{
+  "success": false,
+  "message": "No hay tokens de Google Calendar para este usuario. Conecta Google primero."
+}
+```
+
+---
+
+## `useCalendarStatus` Hook
+
+The `useCalendarStatus` hook manages the link state between the current user and their Google Calendar tokens. It is used by `CalendarModal` to gate the **Sync** button.
+
+```typescript
+import { useCalendarStatus } from '@/hooks/useCalendarStatus';
+
+const { isLinked, isLoading, error, saveTokens, refreshStatus } = useCalendarStatus();
+```
+
+<AccordionGroup>
+  <Accordion title="Return values">
+    <ResponseField name="isLinked" type="boolean">
+      `true` when a row exists in `user_calendar_tokens` for the authenticated user.
+    </ResponseField>
+    <ResponseField name="isLoading" type="boolean">
+      `true` while the hook is checking the database.
+    </ResponseField>
+    <ResponseField name="error" type="string | null">
+      Any error message surfaced from the database query or auth call.
+    </ResponseField>
+    <ResponseField name="saveTokens" type="(tokens: CalendarTokens) => Promise<void>">
+      Upserts a `CalendarTokens` object into `user_calendar_tokens` for the current user. Preserves an existing `refresh_token` when the new token response does not include one (Google only returns a refresh token on first authorization).
+    </ResponseField>
+    <ResponseField name="refreshStatus" type="() => Promise<void>">
+      Re-queries `user_calendar_tokens` to update `isLinked`. Called automatically on mount and whenever `CalendarModal` opens.
+    </ResponseField>
+  </Accordion>
+  <Accordion title="CalendarTokens type">
+    ```typescript
+    export interface CalendarTokens {
+      access_token: string;
+      refresh_token?: string | null;
+      expiry_date?: string | null;
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Relevant Types
+
+```typescript
+// sgu.ts
+export interface ClassSession {
+  id: string;
+  subject: string;
+  subject_faculty?: string;
+  day?: 'Lunes' | 'Martes' | 'Miércoles' | 'Jueves' | 'Viernes';
+  startTime?: string;  // "HH:mm"
+  endTime?: string;    // "HH:mm"
+  teacher: string;
+  location: string;
+  floor?: string;
+  isVirtual?: boolean;
+  color?: string;
+  conflict?: boolean;
+}
+
+export interface Schedule {
+  id?: string;
+  title: string;
+  academic_period?: string;
+  faculty?: string;
+  sessions: ClassSession[];
+  lastUpdated: Date | string;
+}
+```
+
+---
+
+## Database Tables
+
+<CardGroup cols={3}>
+  <Card title="user_calendar_tokens" icon="key">
+    Stores `access_token`, `refresh_token`, and `expiry_date` per user. The Edge Function reads from and writes back to this table.
+  </Card>
+  <Card title="profiles" icon="user">
+    Stores user display name, avatar, and career. Queried to personalize the dashboard but not involved in the sync flow.
+  </Card>
+  <Card title="schedules" icon="table">
+    Persists the parsed timetable. The `sessions` column is the source array iterated by `buildCalendarEventsFromSchedule`.
+  </Card>
+</CardGroup>

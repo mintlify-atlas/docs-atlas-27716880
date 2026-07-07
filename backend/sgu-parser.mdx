@@ -1,0 +1,237 @@
+---
+title: "SGU Schedule Parser Utility Reference"
+sidebarTitle: "SGU Parser"
+description: "Reference for the local PDF/image schedule parser functions exported from sguRegexParser.ts, including the positional text extractor and normalization utilities."
+---
+
+`sguRegexParser.ts` is Inforario's fully local, zero-network schedule parser. It processes the official UTM Sistema de Gestión Universitaria (SGU) schedule PDF (or an image scan) entirely inside the browser using `pdfjs-dist` for PDF text extraction and `Tesseract.js` for OCR fallback. The output is a structured `ParseResult` ready to be rendered in the schedule grid.
+
+The two public exports are `parseScheduleFile` — the main entry point — and `resolveConflicts` — a standalone utility used both here and by the Supabase Edge path.
+
+---
+
+## Types
+
+```typescript
+interface ParseResult {
+  sessions: ClassSession[];
+  faculty?: string;
+  academic_period?: string;
+  student_name?: string;
+  career?: string;
+}
+
+interface ClassSession {
+  id: string;
+  subject: string;
+  subject_faculty?: string;
+  day?: DayOfWeek;
+  startTime?: string;  // "HH:mm"
+  endTime?: string;    // "HH:mm"
+  teacher: string;
+  location: string;
+  floor?: string;
+  isVirtual?: boolean;
+  color?: string;
+  conflict?: boolean;
+}
+```
+
+---
+
+## Exported functions
+
+### `parseScheduleFile()`
+
+```typescript
+parseScheduleFile(base64Data: string, mimeType: string): Promise<ParseResult>
+```
+
+The main entry point for local schedule parsing. Strips the `data:*;base64,` prefix from `base64Data`, then routes to the appropriate back-end parser based on `mimeType`:
+
+- `application/pdf` → `parsePDF()` (pdfjs-dist positional column parser)
+- `image/*` → `parseImage()` (Tesseract.js OCR → `parseRawText()`)
+- Anything else → throws `"Tipo de archivo no soportado: <mimeType>"`
+
+`resolveConflicts()` is called internally by both paths before the result is returned, so the `sessions` array in the resolved `ParseResult` is always conflict-annotated and sorted.
+
+<ParamField path="base64Data" type="string" required>
+  A base64-encoded data URL of the file, e.g. `data:application/pdf;base64,JVBERi0x…`. The `data:*;base64,` prefix is stripped automatically before decoding.
+</ParamField>
+
+<ParamField path="mimeType" type="string" required>
+  MIME type of the uploaded file. Determines which parser is invoked.
+
+  | Value | Parser used |
+  |---|---|
+  | `application/pdf` | `parsePDF()` via `pdfjs-dist` |
+  | `image/png`, `image/jpeg`, … | `parseImage()` via Tesseract.js OCR |
+</ParamField>
+
+**Returns** `Promise<ParseResult>`
+
+```typescript
+const result = await parseScheduleFile(base64, 'application/pdf');
+// result.sessions    → ClassSession[]
+// result.faculty     → "FACULTAD DE CIENCIAS INFORMÁTICAS"
+// result.academic_period → "ABRIL 2025 - AGOSTO 2025"
+// result.student_name    → "Juan Pérez"
+// result.career          → "INGENIERÍA EN SISTEMAS"
+```
+
+**Error handling**
+
+Any error whose message begins with `"No se pudo"` or `"Tipo de archivo"` is re-thrown verbatim. All other unexpected errors are wrapped in a generic user-friendly message:
+
+```text
+"Error al analizar el horario. Por favor asegúrate de que el archivo sea legible y contenga un horario válido."
+```
+
+---
+
+### `resolveConflicts()`
+
+```typescript
+resolveConflicts(sessions: ClassSession[]): ClassSession[]
+```
+
+A non-destructive conflict detector and sorter. Accepts a flat array of `ClassSession` objects (possibly mixed schedulable and unscheduled) and returns a new sorted array with `conflict` flags set correctly.
+
+**Algorithm**
+
+1. Split sessions into two buckets:
+   - **Schedulable**: sessions that have a `day`, `startTime`, and `endTime`
+   - **Unscheduled**: virtual classes or sessions missing any time field
+2. Reset `conflict = false` on all sessions.
+3. Sort schedulable sessions by `day` (locale string order) then `startTime` ascending.
+4. O(n²) pairwise scan over same-day sessions. For each pair, convert `HH:mm` to total minutes and detect overlap with:
+   ```
+   start1 < end2 && start2 < end1
+   ```
+   If overlapping, set `conflict = true` on **both** sessions.
+5. Return `[...schedulable, ...unscheduled]` — schedulable sessions first, unscheduled appended at the end.
+
+<ParamField path="sessions" type="ClassSession[]" required>
+  Array of class sessions. May contain any mix of schedulable and unscheduled entries. The original objects are mutated in place (the `conflict` flag is written directly) but none are removed.
+</ParamField>
+
+```typescript
+import { resolveConflicts } from './features/uploader/utils/sguRegexParser';
+
+const annotated = resolveConflicts(parsedSessions);
+const conflicts = annotated.filter(s => s.conflict);
+console.log(`${conflicts.length} conflicting sessions detected`);
+```
+
+<Note>
+  `resolveConflicts` is **non-destructive**: it never removes sessions. Every session in the input appears exactly once in the output. Only the `conflict` property is changed.
+</Note>
+
+---
+
+## Internal functions
+
+The following functions are not exported. They are documented here as implementation reference.
+
+<Accordion title="parsePDF(base64)">
+  Decodes the raw base64 string with `atob()` (browser) or `Buffer.from()` (Node.js) and loads the binary into `pdfjs-dist`. For every page it:
+
+  1. Calls `page.getTextContent()` and retrieves each item's text content plus its `transform[4]` (x) and `viewport.height − transform[5]` (y) coordinates.
+  2. Passes all `TextItem` objects through `extractMetadata()` and `extractSubjectBlocks()`.
+  3. Calls `resolveConflicts()` on the resulting sessions.
+
+  **Column layout constants** used by `extractSubjectBlocks()`:
+
+  | Constant | Value | Purpose |
+  |---|---|---|
+  | `SUBJECT_MAX_X` | `170` | Right boundary of the subject/asignatura column |
+  | `DOCENTE_MIN_X` | `260` | Left boundary of the teacher name column |
+  | `DOCENTE_MAX_X` | `415` | Right boundary of the teacher name column |
+  | `HORARIO_MIN_X` | `495` | Left boundary of the schedule/location column |
+
+  Subject names spanning multiple rows are concatenated in y-order. Items within 15 px vertically are grouped into the same subject. The day and time are extracted from strings matching:
+  ```
+  /(?:-\s*)?\b(LUNES|MARTES|MI[EÉ]RCOLES|JUEVES|VIERNES)\b\s*\((\d{1,2}):(\d{2}):\d{2}-(\d{1,2}):(\d{2}):\d{2}\)/i
+  ```
+</Accordion>
+
+<Accordion title="parseImage(base64, mimeType)">
+  Reconstructs a data URL from the raw base64 and MIME type, then calls `Tesseract.recognize(imageDataUrl, 'spa')` for Spanish OCR. Progress is logged to the console at the `recognizing text` status.
+
+  If the recognised text is shorter than 20 characters the function throws:
+  ```
+  "No se pudo extraer texto de la imagen. Asegúrate de que sea legible y contenga un horario válido."
+  ```
+
+  The raw OCR string is forwarded to `parseRawText()`, which applies the same day-time regex on a line-by-line basis. OCR output is inherently noisier than PDF text, so accuracy depends on image resolution and contrast.
+</Accordion>
+
+<Accordion title="extractMetadata(items)">
+  Reads document metadata from the header region of page 1. Only items where `page === 1` and `y < 210` are considered.
+
+  For each header item, the text is compared against these label strings:
+
+  | Label | Stored as | Post-processed with |
+  |---|---|---|
+  | `PERIODO:` | `academicPeriod` | `normalizeAcademicPeriod()` |
+  | `FACULTAD:` | `faculty` | `.toUpperCase()` |
+  | `ESCUELA:` | `career` | `.toUpperCase()` |
+  | `ESTUDIANTE:` | `studentName` | Raw value |
+  | `NIVEL:` | `level` | Raw value |
+
+  Value discovery: after finding a label item at index `i`, the function scans forward in the same `headerItems` array and returns the first item that is on the same row (`|Δy| ≤ 5 px`) and to the right (`x > label.x`).
+</Accordion>
+
+<Accordion title="normalizeTeacherName(rawName)">
+  Converts UTM raw teacher name format into a human-readable "Firstname Lastname" string.
+
+  **UTM format**: `LASTNAME1 LASTNAME2 FIRSTNAME1 [FIRSTNAME2]`  
+  **Output format**: `Firstname1 Lastname1`
+
+  Steps:
+  1. Returns `'Sin asignar'` for empty strings, names beginning with `TEMP `, or names containing `TEMPORAL`.
+  2. Strips title prefixes matching: `ing`, `lic`, `dr`, `dra`, `msc`, `mgtr`, `phd`, `abg`, `arq`, `econ`, `prof`, `sr`, `sra`, `srta` (run twice to catch double titles like "DR. ING.").
+  3. Splits by whitespace into `parts`:
+     - ≥ 3 parts → `"${capitalize(parts[2])} ${capitalize(parts[0])}"` (Firstname Lastname1)
+     - 2 parts → `"${capitalize(parts[1])} ${capitalize(parts[0])}"` (reversed)
+     - 1 part → capitalized as-is
+</Accordion>
+
+<Accordion title="normalizeLocation(codAmb, tipo?)">
+  Parses UTM classroom codes of the form `1-59-FLOOR-ROOM-TYPE` into human-readable location strings.
+
+  **Regex**: `/\d+-\d+-(\d+)-(\d+)-?([\w]*)/`
+
+  | Code segment | Meaning |
+  |---|---|
+  | Group 1 | Floor number |
+  | Group 2 | Room number (zero-padded to 2 digits) |
+  | Group 3 | Type code (e.g. `LC` for Lab. Computación, `A` for Aula) |
+
+  **Output rules**:
+  - Type code `LC` or `tipo` containing `"laboratorio"` → `"Lab. Computación {floor}{room} - Piso {floor}"`
+  - Default → `"Aula {floor}{room} - Piso {floor}"`
+
+  If the code doesn't match the UTM pattern (e.g. administrative faculties), the raw code is returned, optionally prefixed with `tipo`.
+
+  **Examples**:
+
+  | Input | Output |
+  |---|---|
+  | `1-59-2-04-A` | `Aula 204 - Piso 2` |
+  | `1-59-3-06-LC` | `Lab. Computación 306 - Piso 3` |
+  | `VIRTUAL` | `VIRTUAL` (no match → raw value) |
+</Accordion>
+
+<Accordion title="normalizeAcademicPeriod(raw)">
+  Converts verbose SGU period strings into a compact form.
+
+  **Regex**: `/([A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+)\s+(?:DE(?:L)?)\s+(\d{4})\s+HASTA\s+([A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+)\s+(?:DE(?:L)?)\s+(\d{4})/i`
+
+  | Input | Output |
+  |---|---|
+  | `ABRIL DE 2026 HASTA AGOSTO DE 2026` | `ABRIL 2026 - AGOSTO 2026` |
+  | `SEPTIEMBRE DEL 2025 HASTA ENERO DEL 2026` | `SEPTIEMBRE 2025 - ENERO 2026` |
+
+  If no match is found, the raw string is returned uppercased.
+</Accordion>

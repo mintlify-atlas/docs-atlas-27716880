@@ -1,20 +1,83 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Inforario: Academic Schedule Manager for UTM Students"
+sidebarTitle: "Home"
+description: "Inforario parses UTM SGU schedule PDFs into interactive timetables. Detect conflicts, customize colors, and sync to Google Calendar or export .ics files."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Inforario is a web application built for students at the Universidad Técnica de Manabí (UTM). It takes the raw PDF schedule exported from the SGU (Sistema de Gestión Universitaria), parses it automatically, and presents your weekly timetable in a clean, interactive interface — complete with conflict detection, color customization, and one-click calendar export.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn what Inforario does, who it's for, and how it works end to end.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run the app locally in minutes. From clone to working dev server.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the feature-driven frontend structure and backend services.
+  </Card>
+  <Card title="Schedule Upload" icon="file-arrow-up" href="/features/schedule-upload">
+    How PDF and image parsing works — regex extractor and AI fallback.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What you can do with Inforario
+
+<CardGroup cols={3}>
+  <Card title="Parse SGU PDFs" icon="file-pdf">
+    Drop your UTM schedule PDF and get a structured timetable in seconds.
+  </Card>
+  <Card title="Detect Conflicts" icon="triangle-exclamation">
+    Overlapping classes are automatically flagged and highlighted visually.
+  </Card>
+  <Card title="Sync to Calendar" icon="calendar-check">
+    Push all your weekly classes to Google Calendar with recurring events.
+  </Card>
+  <Card title="Export .ics" icon="download">
+    Download a standard .ics file compatible with any calendar app.
+  </Card>
+  <Card title="Customize Colors" icon="palette">
+    Assign a unique color to each subject for quick visual identification.
+  </Card>
+  <Card title="Save to Cloud" icon="cloud">
+    Sign in to save and manage multiple schedules across devices.
+  </Card>
+</CardGroup>
+
+## Get started in 4 steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the project and install frontend dependencies using Node.js.
+  </Step>
+  <Step title="Configure environment variables">
+    Add your Supabase project URL and anon key to `frontend/.env.local`.
+  </Step>
+  <Step title="Start the development server">
+    Run `npm run dev` inside the `frontend/` directory to start Vite.
+  </Step>
+  <Step title="Upload your schedule">
+    Open the app, drop your SGU PDF, and see your timetable instantly.
+  </Step>
+</Steps>
+
+<Note>
+  Inforario works fully offline for schedule parsing — Supabase is only required for cloud save, authentication, and Google Calendar sync. You can use the core features without any backend setup.
+</Note>
+
+## Explore the docs
+
+<CardGroup cols={2}>
+  <Card title="Google Calendar Sync" icon="google" href="/integrations/google-calendar">
+    Set up OAuth2 and push recurring weekly events to Google Calendar.
+  </Card>
+  <Card title="ICS Export" icon="calendar" href="/integrations/ics-export">
+    Generate a standards-compliant .ics file for Apple, Outlook, or any app.
+  </Card>
+  <Card title="Supabase Setup" icon="database" href="/configuration/supabase-setup">
+    Configure your Supabase project, tables, and Edge Function secrets.
+  </Card>
+  <Card title="Backend Reference" icon="server" href="/backend/extract-schedule">
+    Explore the Supabase Edge Functions that power AI extraction and calendar sync.
+  </Card>
+</CardGroup>

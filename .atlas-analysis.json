@@ -1,0 +1,110 @@
+{
+  "projectType": "saas",
+  "projectName": "Inforario",
+  "projectDescription": "A web application that parses university schedule PDFs from the UTM SGU system and lets students visualize, customize, and export their academic timetable to Google Calendar or .ics format.",
+  "theme": "luma",
+  "primaryColor": "#004925",
+  "lightColor": "#E6F4ED",
+  "darkColor": "#002B16",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/schedule-upload",
+              "features/schedule-viewer",
+              "features/conflict-detection",
+              "features/customization"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/google-calendar",
+              "integrations/ics-export",
+              "integrations/supabase-auth"
+            ]
+          },
+          {
+            "group": "Configuration & Deployment",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/supabase-setup",
+              "configuration/local-development"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Backend Reference",
+        "groups": [
+          {
+            "group": "Edge Functions",
+            "pages": [
+              "backend/extract-schedule",
+              "backend/google-calendar-sync"
+            ]
+          },
+          {
+            "group": "Frontend Services",
+            "pages": [
+              "backend/supabase-client",
+              "backend/sgu-parser",
+              "backend/ics-generator"
+            ]
+          },
+          {
+            "group": "Data Types",
+            "pages": [
+              "backend/types-reference"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "PDF schedule parsing with positional text extraction for UTM SGU format",
+    "AI-powered fallback schedule extraction via Groq LLM (llama-3.3-70b-versatile)",
+    "Interactive weekly schedule grid (desktop) and list (mobile) views",
+    "Automatic time conflict detection and visual highlighting",
+    "Per-subject color customization and theme switching",
+    "Google Calendar sync via Supabase Edge Function with OAuth2 token management",
+    "ICS file generation for Apple/Google/Outlook calendar import",
+    "Supabase authentication (email/password + Google OAuth)",
+    "Cloud schedule persistence per user with multi-schedule management",
+    "OCR fallback via Tesseract.js for scanned image schedules",
+    "PDF export of the visual schedule with jsPDF",
+    "Responsive design with Framer Motion animations"
+  ],
+  "publicApiSurface": [
+    "parseScheduleFile(base64Data, mimeType): ParseResult — local regex-based PDF/image parser",
+    "parseScheduleFileWithEdge(base64Data): { sessions } — AI-based parser via Supabase Edge Function",
+    "resolveConflicts(sessions): ClassSession[] — conflict detection utility",
+    "saveScheduleToDB(userId, schedule): data — persist schedule to Supabase",
+    "getUserSchedules(userId): DBResponseSchedule[] — fetch user's saved schedules",
+    "getScheduleById(scheduleId): DBResponseSchedule — fetch single schedule",
+    "deleteSchedule(scheduleId): void — remove a schedule",
+    "getUserProfile(userId): UserProfile | null — fetch user profile",
+    "signInWithGoogle(): data — OAuth2 Google sign-in",
+    "signInWithEmail(email, password): data — email auth",
+    "signUpWithEmail(email, password, fullName): data — register new user",
+    "resetPasswordForEmail(email): data — password reset",
+    "buildCalendarEventsFromSchedule(schedule, semesterStart, semesterEnd, timeZone): CalendarEventInput[]",
+    "syncCalendarEvents(payload): SyncCalendarResponse — push events to Google Calendar",
+    "generateICS(schedule, semesterStart, semesterEnd): void — download .ics file",
+    "Edge Function POST /functions/v1/extract-schedule — Groq AI extraction endpoint",
+    "Edge Function POST /functions/v1/google-calendar-sync — Google Calendar event creation endpoint"
+  ]
+}

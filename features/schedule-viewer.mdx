@@ -1,0 +1,188 @@
+---
+title: "Interactive Schedule Grid and List Views"
+sidebarTitle: "Schedule Viewer"
+description: "Inforario displays your parsed timetable as a desktop weekly grid or a mobile-optimized list view, with font scaling, zoom, and PDF export."
+---
+
+Once your schedule has been parsed, Inforario transitions from the landing screen to the `ScheduleDashboard` — the central hub that combines the weekly timetable, customization controls, export actions, and modal dialogs into a single responsive layout. The dashboard automatically selects the right view for your screen size and keeps all UI state (theme, font scale, title edits) in sync with the database.
+
+## ScheduleDashboard
+
+`ScheduleDashboard` is the top-level container rendered when `AppView` is `DASHBOARD`. It owns the following state:
+
+| State | Type | Purpose |
+|-------|------|---------|
+| `theme` | `ScheduleTheme` | Visual theme applied to the grid |
+| `fontScale` | `number` | Scaling factor for text, range 0.7–1.5 |
+| `customizerOpen` | `boolean` | Controls the `CustomizerSidebar` slide-in panel |
+| `actionsMenuOpen` | `boolean` | Controls the export dropdown menu |
+| `isExporting` | `boolean` | Disables the export button during PDF generation |
+| `isEditingTitle` | `boolean` | Switches the title between display and edit mode |
+| `tempTitle` | `string` | Holds the in-progress title value during editing |
+| `calendarModalOpen` | `boolean` | Opens the `.ics` calendar sync dialog |
+| `resetModalOpen` | `boolean` | Opens the reset / clear confirmation dialog |
+
+The `isMobile` flag is derived from `useMediaQuery('(max-width: 768px)')` and determines which schedule component is rendered.
+
+## Desktop View — ScheduleGrid
+
+On screens wider than 768 px, `ScheduleGrid` renders the classic weekly timetable. It is a CSS grid with a fixed **50 px time column** on the left and five equal day columns (Lunes through Viernes) to the right.
+
+```
+┌────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
+│  HORA  │  LUNES  │ MARTES  │MIÉRCOLES│ JUEVES  │ VIERNES │
+├────────┼─────────┼─────────┼─────────┼─────────┼─────────┤
+│ 07:00  │         │         │         │         │         │
+│ 08:00  │ [Class] │         │ [Class] │         │         │
+│ 09:00  │         │ [Class] │         │ [Class] │         │
+│  ...   │         │         │         │         │         │
+└────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
+```
+
+The displayed hour range is computed dynamically by `getScheduleHoursRange` from `timeSelectors.ts`, which scans all non-virtual sessions to find the earliest start hour and latest end hour, clamped to a minimum window of 4 hours.
+
+Each `ClassSession` is positioned absolutely within its day column:
+
+```typescript
+// ScheduleGrid.tsx — position calculation
+const getPosition = (session: ClassSession) => {
+  const [startH, startM] = session.startTime.split(':').map(Number);
+  const [endH,   endM  ] = session.endTime.split(':').map(Number);
+  const startOffset = (startH - minHour) * 60 + startM;
+  const duration    = (endH * 60 + endM) - (startH * 60 + startM);
+  return {
+    top:    `${(startOffset / 60) * 82}px`,  // 82px per hour slot
+    height: `${(duration    / 60) * 80}px`,
+  };
+};
+```
+
+Conflicting sessions show a pulsing `AlertTriangle` icon in the top-right corner of their card and override the normal background with the error container color. Clicking any card opens a detail modal showing subject, teacher, day, time, location, and floor.
+
+Virtual sessions (those without a scheduled day) are rendered in a separate **Materias Virtuales / Sin Horario Fijo** section below the grid, displayed in a responsive card grid.
+
+## Mobile View — ScheduleList
+
+On screens 768 px wide or narrower, `ScheduleList` takes over. It groups sessions by day of the week, sorts them by `startTime`, and renders each as a tappable card in a vertical list powered by Framer Motion stagger animations.
+
+Each session card shows:
+- **Time range** (with a clock icon)
+- **Subject name**
+- **Teacher** (first name only, truncated)
+- **Location** (room part before the `" - "` separator)
+- A **CHOQUE** badge (error style) when `conflict: true`
+
+Virtual subjects are collected in a separate **Materias Virtuales** card section at the bottom of the list. Days with zero sessions are hidden automatically.
+
+<Note>
+  Both views share an identical detail modal — tapping any session card in either view opens the same `Modal` component showing the full session details and, for conflicting sessions, a **Resolver Conflicto** action button.
+</Note>
+
+## Inline Title Editing
+
+The schedule title displayed in the dashboard header is fully editable without navigating to a settings page.
+
+<Steps>
+  <Step title="Enter edit mode">
+    Click the schedule title. A `PenTool` icon appears on hover as a visual hint. Clicking switches the `<h2>` for an `<input>` pre-filled with the current title.
+  </Step>
+  <Step title="Edit the title">
+    Type your new title. The `tempTitle` state tracks the in-progress value.
+  </Step>
+  <Step title="Confirm">
+    Press **Enter** or click the `Check` icon, or simply blur the input. `saveTitle()` updates `currentSchedule.title` and persists the change via `saveScheduleToDB`.
+  </Step>
+</Steps>
+
+## Font Scaling (Zoom)
+
+Font scale controls are available in both layouts:
+
+- **Desktop**: a vertical pill widget (sticky, positioned to the left of the grid) with `ZoomIn` / `ZoomOut` buttons and a percentage readout.
+- **Mobile**: a compact horizontal control row in the dashboard header.
+
+```typescript
+// ScheduleDashboard.tsx — zoom handlers
+const handleZoomIn  = () => setFontScale(prev => Math.min(prev + 0.1, 1.5));
+const handleZoomOut = () => setFontScale(prev => Math.max(prev - 0.1, 0.7));
+```
+
+The `fontScale` value is forwarded to `ScheduleGrid` as a prop and applied to every text element via inline `fontSize` styles (e.g. `fontSize: ${12 * fontScale}px`).
+
+## PDF Export
+
+The **Exportar → Documento PDF** action in the actions dropdown triggers `handleDownload`, which generates a landscape A3 PDF using **jsPDF**.
+
+<Accordion title="PDF generation details">
+  The export pipeline:
+
+  1. Creates a `jsPDF` instance in landscape A3 orientation.
+  2. Reads the active `theme` to select typography, colors, and grid style from an internal `themeConfig` map covering `DEFAULT`, `MINIMALIST`, `SCHOOL`, and `NEON` presets.
+  3. Draws the page background, university name, faculty, student name, academic period, and generation date in the header.
+  4. Computes `minHour` / `maxHour` from the session data to size the grid rows.
+  5. Draws vertical and horizontal grid lines, day headers, and hour labels.
+  6. For each regular session, calculates its x/y position and height in millimetres, fills the cell with the session's `color`, and uses the `hexToRgb` + `getPdfTextColor` helpers to choose a legible text color.
+  7. Conflict sessions are rendered in `rgb(255, 0, 110)` regardless of their assigned color.
+  8. Virtual sessions are appended below the grid in compact cards.
+  9. Saves the file as `horario_<academic_period>.pdf`.
+
+  ```typescript
+  // ScheduleDashboard.tsx — contrast helper
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result
+      ? { r: parseInt(result[1], 16), g: parseInt(result[2], 16), b: parseInt(result[3], 16) }
+      : { r: 0, g: 0, b: 0 };
+  };
+
+  const getPdfTextColor = (r: number, g: number, b: number) => {
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.6 ? [27, 28, 28] : [255, 255, 255]; // dark on light, white on dark
+  };
+  ```
+</Accordion>
+
+## Actions Menu
+
+The **Exportar** button opens a dropdown with two export options:
+
+<CardGroup cols={2}>
+  <Card title="Documento PDF" icon="file-pdf">
+    Generates and downloads a landscape A3 PDF styled with the active theme. The button shows a spinning `RefreshCw` icon while `isExporting` is `true`.
+  </Card>
+  <Card title="Archivo de Calendario" icon="calendar-days">
+    Opens the `CalendarModal` which calls `generateICS` with start and end date inputs, producing a downloadable `.ics` file compatible with Google Calendar, Apple Calendar, and Outlook.
+  </Card>
+</CardGroup>
+
+## AppView Transitions
+
+`ScheduleDashboard` is shown when `App.tsx` holds `AppView.DASHBOARD`. The **Nuevo** button triggers the `ConfirmResetModal` — confirming calls `onReset()`, which sets the schedule back to `null` and returns to `AppView.LANDING`.
+
+## Schedule Data Shape
+
+The `Schedule` interface that drives both views:
+
+<ResponseField name="id" type="string">
+  Supabase row UUID. Present only after the schedule has been saved to the database.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  User-editable schedule title, defaulting to `"Mi Horario Académico"` on first parse.
+</ResponseField>
+
+<ResponseField name="academic_period" type="string">
+  Normalized academic period string (e.g. `"SEPTIEMBRE 2025 - ENERO 2026"`).
+</ResponseField>
+
+<ResponseField name="faculty" type="string">
+  Faculty name displayed in the dashboard header subtitle.
+</ResponseField>
+
+<ResponseField name="sessions" type="ClassSession[]" required>
+  All parsed class sessions — both regular (with day + times) and virtual.
+</ResponseField>
+
+<ResponseField name="lastUpdated" type="Date | string" required>
+  Timestamp of the last modification, used for ordering in the saved schedules list.
+</ResponseField>
